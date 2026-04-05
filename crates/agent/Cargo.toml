@@ -1,0 +1,13 @@
+[package]
+name = "loci-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+loci-core = { path = "../../crates/core" }
+loci-llm = { path = "../../crates/llm" }
+loci-tools = { path = "../../crates/tools" }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

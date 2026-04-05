@@ -1,0 +1,45 @@
+# .bs/config.toml — 项目级配置（优先级高于 ~/.config/bs/config.toml）
+# 复制到 ~/.config/bs/config.toml 作为全局配置
+
+default_provider = "openai"
+
+# OpenAI
+[[providers]]
+name = "openai"
+model = "gpt-4o"
+api_key_env = "OPENAI_API_KEY"
+
+# Ollama（本地，无需 API key）
+[[providers]]
+name = "ollama"
+base_url = "http://localhost:11434/v1"
+model = "qwen2.5-coder:7b"
+api_key = "ollama"
+
+# DeepSeek
+[[providers]]
+name = "deepseek"
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-coder"
+api_key_env = "DEEPSEEK_API_KEY"
+
+# Groq（快速推理）
+[[providers]]
+name = "groq"
+base_url = "https://api.groq.com/openai/v1"
+model = "llama-3.3-70b-versatile"
+api_key_env = "GROQ_API_KEY"
+
+# Claude via OpenRouter
+[[providers]]
+name = "claude"
+base_url = "https://openrouter.ai/api/v1"
+model = "anthropic/claude-3.5-sonnet"
+api_key_env = "OPENROUTER_API_KEY"
+
+# LM Studio（本地）
+[[providers]]
+name = "lmstudio"
+base_url = "http://localhost:1234/v1"
+model = "local-model"
+api_key = "lm-studio"

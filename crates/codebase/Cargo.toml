@@ -1,0 +1,27 @@
+[package]
+name = "loci-codebase"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+loci-core = { path = "../../crates/core" }
+loci-storage = { path = "../../crates/storage" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+walkdir = { workspace = true }
+# Rust AST parsing
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+proc-macro2 = "1"
+quote = "1"
+# Multi-language AST
+tree-sitter = { workspace = true }
+tree-sitter-python = { workspace = true }
+tree-sitter-typescript = { workspace = true }
+tree-sitter-go = { workspace = true }
+tree-sitter-java = { workspace = true }
+# Git
+git2 = { version = "0.19", default-features = false }

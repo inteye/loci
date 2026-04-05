@@ -1,0 +1,17 @@
+[package]
+name = "loci-knowledge"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+loci-core = { path = "../../crates/core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+walkdir = { workspace = true }
+notify = { workspace = true }
+reqwest = { version = "0.12", features = ["json"] }

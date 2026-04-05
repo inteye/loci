@@ -1,0 +1,25 @@
+[package]
+name = "loci-server"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "loci-server"
+path = "src/main.rs"
+
+[dependencies]
+loci-core    = { path = "../../crates/core" }
+loci-llm     = { path = "../../crates/llm" }
+loci-agent   = { path = "../../crates/agent" }
+loci-tools   = { path = "../../crates/tools" }
+loci-graph   = { path = "../../crates/graph" }
+loci-memory  = { path = "../../crates/memory" }
+loci-knowledge = { path = "../../crates/knowledge" }
+axum       = { workspace = true }
+tokio      = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+uuid       = { workspace = true }
+anyhow     = { workspace = true }
+tracing    = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -1,0 +1,43 @@
+{
+  "name": "sage",
+  "displayName": "Sage",
+  "description": "Codebase understanding agent — ask questions, explain code, analyze diffs",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["AI", "Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "bs.ask",     "title": "Sage: Ask a question" },
+      { "command": "bs.explain", "title": "Sage: Explain this file" },
+      { "command": "bs.diff",    "title": "Sage: Explain recent changes" },
+      { "command": "bs.index",   "title": "Sage: Index project" }
+    ],
+    "menus": {
+      "editor/context": [
+        { "command": "bs.explain", "group": "sage" },
+        { "command": "bs.ask",     "group": "sage" }
+      ]
+    },
+    "configuration": {
+      "title": "Sage",
+      "properties": {
+        "sage.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:3000",
+          "description": "URL of the sage serve instance"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
