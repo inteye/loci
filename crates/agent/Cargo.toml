@@ -5,9 +5,11 @@ edition = "2021"
 
 [dependencies]
 loci-core = { path = "../../crates/core" }
+loci-codebase = { path = "../../crates/codebase" }
 loci-llm = { path = "../../crates/llm" }
 loci-tools = { path = "../../crates/tools" }
 tokio = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }

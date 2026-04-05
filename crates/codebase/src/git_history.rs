@@ -58,7 +58,8 @@ impl GitHistory {
             }
         }
 
-        Ok(FileHistory { path: file_path.to_string(), commits, blame_summary: vec![] })
+        let blame_summary = Self::blame_summary(&repo, file_path)?;
+        Ok(FileHistory { path: file_path.to_string(), commits, blame_summary })
     }
 
     /// Get the most recent N commits for the whole repo
@@ -82,5 +83,38 @@ impl GitHistory {
             .collect();
 
         Ok(commits)
+    }
+
+    fn blame_summary(repo: &Repository, file_path: &str) -> Result<Vec<(String, String)>> {
+        let path = Path::new(file_path);
+        let blame = repo.blame_file(path, None)?;
+        let file_content = std::fs::read_to_string(repo.workdir().unwrap_or(repo.path()).join(path))
+            .or_else(|_| std::fs::read_to_string(path))
+            .unwrap_or_default();
+        let lines: Vec<&str> = file_content.lines().collect();
+
+        let mut summary = Vec::new();
+        for hunk in blame.iter().take(8) {
+            let commit_hash = hunk.final_commit_id().to_string()[..8].to_string();
+            let start = hunk.final_start_line().saturating_sub(1) as usize;
+            let end = start.saturating_add(hunk.lines_in_hunk());
+            let excerpt = lines
+                .get(start..end.min(lines.len()))
+                .unwrap_or(&[])
+                .iter()
+                .map(|line| line.trim())
+                .find(|line| !line.is_empty())
+                .unwrap_or("");
+
+            let content = if excerpt.is_empty() {
+                format!("lines {}-{}", start + 1, end)
+            } else {
+                format!("lines {}-{}: {}", start + 1, end, excerpt.chars().take(120).collect::<String>())
+            };
+
+            summary.push((commit_hash, content));
+        }
+
+        Ok(summary)
     }
 }

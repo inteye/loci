@@ -2,9 +2,11 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use anyhow::Result;
 use rustyline::{DefaultEditor, error::ReadlineError};
+use std::sync::Arc;
 use loci_codebase::{CodebaseIndexer, GitHistory};
 use loci_graph::{KnowledgeGraph, GraphStore, Node, Edge, NodeKind, EdgeKind, VectorIndex};
 use loci_llm::{LlmClient, config::BsConfig};
+use loci_agent::{TraceAgent, TraceReport};
 use loci_memory::{MemoryStore, remember};
 use loci_knowledge::{KnowledgeStore, ingest_file, ingest_url};
 use loci_skills::SkillRegistry;
@@ -203,6 +205,7 @@ async fn build_graph(path: &PathBuf, index: &loci_codebase::CodebaseIndex) -> Re
     let store = GraphStore::new(&graph_db_path(path)).await?;
     store.clear().await?;  // avoid duplicate nodes on re-index
     let mut graph = KnowledgeGraph::default();
+    let mut commit_nodes: std::collections::HashMap<String, Uuid> = std::collections::HashMap::new();
 
     for pf in &index.parsed_files {
         let file_node = Node {
@@ -212,6 +215,38 @@ async fn build_graph(path: &PathBuf, index: &loci_codebase::CodebaseIndex) -> Re
         };
         let file_id = graph.add_node(file_node.clone());
         store.save_node(&file_node).await?;
+
+        if let Ok(history) = GitHistory::file_history(path, &pf.path, 3) {
+            for commit in history.commits {
+                let commit_id = if let Some(id) = commit_nodes.get(&commit.hash) {
+                    *id
+                } else {
+                    let node = Node {
+                        id: Uuid::new_v4(),
+                        kind: NodeKind::Commit,
+                        name: commit.hash.clone(),
+                        file_path: Some(pf.path.clone()),
+                        description: Some(format!("{} — {}", commit.message, commit.author)),
+                        raw_source: None,
+                        created_at: chrono::DateTime::from_timestamp(commit.timestamp, 0).unwrap_or_else(Utc::now),
+                    };
+                    let id = graph.add_node(node.clone());
+                    store.save_node(&node).await?;
+                    commit_nodes.insert(commit.hash.clone(), id);
+                    id
+                };
+
+                let edge = Edge {
+                    id: Uuid::new_v4(),
+                    from: file_id,
+                    to: commit_id,
+                    kind: EdgeKind::ChangedIn,
+                    label: Some("recent file history".to_string()),
+                };
+                graph.add_edge(edge.clone());
+                store.save_edge(&edge).await?;
+            }
+        }
 
         for sym in &pf.symbols {
             let kind = match sym.kind {
@@ -313,7 +348,7 @@ async fn cmd_ask(question: Option<&str>, path: &PathBuf, provider: Option<&str>)
 
     // Single question mode
     if let Some(q) = question {
-        let answer = do_ask(q, &*llm, &graph, &vector_index, has_embeddings, &mem_store, &kb_store).await?;
+        let answer = do_ask(q, &*llm, &graph, &store, &vector_index, has_embeddings, &mem_store, &kb_store).await?;
         println!("{}", answer);
         return Ok(());
     }
@@ -333,7 +368,7 @@ async fn cmd_ask(question: Option<&str>, path: &PathBuf, provider: Option<&str>)
 
                 // Build context once per question
                 let q_vec = llm.embed(&q).await.ok();
-                let graph_ctx = build_graph_context(&q_vec, &graph, &vector_index, has_embeddings).await;
+                let graph_ctx = build_graph_context(&q, &q_vec, &graph, &vector_index, has_embeddings).await;
                 let mem_ctx   = build_memory_context(&q_vec, &mem_store).await;
                 let kb_ctx    = build_kb_context(&q_vec, &kb_store).await;
 
@@ -355,10 +390,16 @@ async fn cmd_ask(question: Option<&str>, path: &PathBuf, provider: Option<&str>)
                         println!("\nbs> {}\n", answer);
                         session_history.push(Message { role: Role::Assistant, content: answer.clone() });
 
-                        // Save to memory
-                        let mem_text = format!("Q: {}\nA: {}", q, &answer[..answer.len().min(500)]);
-                        let mem_vec = llm.embed(&mem_text).await.ok();
-                        let _ = remember(&mem_store, &mem_text, MemoryScope::Project, None, mem_vec).await;
+                        persist_answer_artifacts(
+                            &q,
+                            &answer,
+                            &*llm,
+                            &graph,
+                            &store,
+                            &vector_index,
+                            &mem_store,
+                            &kb_store,
+                        ).await;
                     }
                     Ok(_) => {}
                     Err(e) => eprintln!("Error: {}", e),
@@ -375,13 +416,14 @@ async fn do_ask(
     question: &str,
     llm: &dyn LlmClient,
     graph: &KnowledgeGraph,
+    graph_store: &GraphStore,
     vector_index: &VectorIndex,
     has_embeddings: bool,
     mem_store: &MemoryStore,
     kb_store: &KnowledgeStore,
 ) -> Result<String> {
     let q_vec = llm.embed(question).await.ok();
-    let graph_ctx = build_graph_context(&q_vec, graph, vector_index, has_embeddings).await;
+    let graph_ctx = build_graph_context(question, &q_vec, graph, vector_index, has_embeddings).await;
     let mem_ctx   = build_memory_context(&q_vec, mem_store).await;
     let kb_ctx    = build_kb_context(&q_vec, kb_store).await;
 
@@ -396,17 +438,46 @@ async fn do_ask(
 
     let answer = match response { loci_llm::LlmResponse::Text(t) => t, _ => String::new() };
 
-    let mem_text = format!("Q: {}\nA: {}", question, &answer[..answer.len().min(500)]);
-    let mem_vec = llm.embed(&mem_text).await.ok();
-    let _ = remember(mem_store, &mem_text, MemoryScope::Project, None, mem_vec).await;
-
-    // Auto-extract reusable knowledge from the answer
-    auto_extract_knowledge(question, &answer, llm, kb_store).await;
+    persist_answer_artifacts(
+        question,
+        &answer,
+        llm,
+        graph,
+        graph_store,
+        vector_index,
+        mem_store,
+        kb_store,
+    ).await;
 
     Ok(answer)
 }
 
-async fn auto_extract_knowledge(question: &str, answer: &str, llm: &dyn LlmClient, kb: &KnowledgeStore) {
+async fn persist_answer_artifacts(
+    question: &str,
+    answer: &str,
+    llm: &dyn LlmClient,
+    graph: &KnowledgeGraph,
+    graph_store: &GraphStore,
+    vector_index: &VectorIndex,
+    mem_store: &MemoryStore,
+    kb_store: &KnowledgeStore,
+) {
+    let mem_text = format!("Q: {}\nA: {}", question, &answer[..answer.len().min(500)]);
+    let mem_vec = llm.embed(&mem_text).await.ok();
+    let _ = remember(mem_store, &mem_text, MemoryScope::Project, None, mem_vec).await;
+
+    auto_extract_knowledge(question, answer, llm, kb_store, graph, graph_store, vector_index).await;
+}
+
+async fn auto_extract_knowledge(
+    question: &str,
+    answer: &str,
+    llm: &dyn LlmClient,
+    kb: &KnowledgeStore,
+    graph: &KnowledgeGraph,
+    graph_store: &GraphStore,
+    vector_index: &VectorIndex,
+) {
     let prompt = format!(
         "Does this Q&A contain a reusable technical insight, design decision, or explanation \
          worth saving to a knowledge base? If yes, extract it as a single concise paragraph. \
@@ -421,28 +492,111 @@ async fn auto_extract_knowledge(question: &str, answer: &str, llm: &dyn LlmClien
             let k = loci_core::types::Knowledge {
                 id: Uuid::new_v4(),
                 source: loci_core::types::KnowledgeSource::Auto,
-                content: t,
+                content: t.clone(),
                 embedding: None,
                 project_id: None,
                 tags: vec!["auto-extracted".to_string()],
                 created_at: Utc::now(),
             };
             let _ = kb.save(&k).await;
+
+            let concept = Node {
+                id: Uuid::new_v4(),
+                kind: NodeKind::Concept,
+                name: format!("Insight: {}", question.chars().take(80).collect::<String>()),
+                file_path: None,
+                description: Some(t.clone()),
+                raw_source: Some(format!("Q: {}\nA: {}", question, answer)),
+                created_at: Utc::now(),
+            };
+
+            if graph_store.save_node(&concept).await.is_ok() {
+                if let Ok(vec) = llm.embed(&t).await {
+                    let _ = vector_index.upsert(concept.id, &vec).await;
+
+                    if let Ok(hits) = vector_index.search(&vec, 3).await {
+                        for (node_id, _) in hits {
+                            if node_id == concept.id { continue; }
+                            if graph.nodes.iter().any(|n| n.id == node_id) {
+                                let edge = Edge {
+                                    id: Uuid::new_v4(),
+                                    from: node_id,
+                                    to: concept.id,
+                                    kind: EdgeKind::ExplainedBy,
+                                    label: Some("auto-extracted insight".to_string()),
+                                };
+                                let _ = graph_store.save_edge(&edge).await;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
-async fn build_graph_context(q_vec: &Option<Vec<f32>>, graph: &KnowledgeGraph, vi: &VectorIndex, has_emb: bool) -> String {
+async fn build_graph_context(
+    question: &str,
+    q_vec: &Option<Vec<f32>>,
+    graph: &KnowledgeGraph,
+    vi: &VectorIndex,
+    has_emb: bool,
+) -> String {
     if has_emb {
         if let Some(ref qv) = q_vec {
-            if let Ok(hits) = vi.search(qv, 20).await {
-                let mut ids: std::collections::HashSet<Uuid> = hits.into_iter().map(|(id,_)| id).collect();
+            if let Ok(hits) = vi.search(qv, 30).await {
+                let trace_query = is_trace_question(question);
+                let mut ranked_ids: Vec<Uuid> = if trace_query {
+                    let mut preferred: Vec<Uuid> = hits.iter()
+                        .filter_map(|(id, _)| graph.nodes.iter()
+                            .find(|n| n.id == *id && matches!(n.kind, NodeKind::Decision | NodeKind::Commit))
+                            .map(|n| n.id))
+                        .collect();
+                    let mut fallback: Vec<Uuid> = hits.iter()
+                        .filter_map(|(id, _)| graph.nodes.iter()
+                            .find(|n| n.id == *id && !matches!(n.kind, NodeKind::Decision | NodeKind::Commit))
+                            .map(|n| n.id))
+                        .collect();
+                    preferred.append(&mut fallback);
+                    preferred
+                } else {
+                    hits.into_iter().map(|(id, _)| id).collect()
+                };
+
+                ranked_ids.truncate(if trace_query { 18 } else { 20 });
+                let mut ids: std::collections::HashSet<Uuid> = ranked_ids.into_iter().collect();
                 for id in ids.clone() { for (_, n) in graph.neighbors(id) { ids.insert(n.id); } }
-                return graph.to_context_str_filtered(&ids);
+                let mut context = graph.to_context_str_filtered(&ids);
+                if trace_query {
+                    let decision_section = graph.nodes.iter()
+                        .filter(|n| ids.contains(&n.id) && n.kind == NodeKind::Decision)
+                        .map(|n| format!("- {}: {}", n.name, n.description.as_deref().unwrap_or("")))
+                        .collect::<Vec<_>>();
+                    if !decision_section.is_empty() {
+                        context = format!("## Prior Decisions\n{}\n\n{}", decision_section.join("\n"), context);
+                    }
+                }
+                return context;
             }
         }
     }
     graph.to_context_str(None)
+}
+
+fn is_trace_question(question: &str) -> bool {
+    let q = question.to_lowercase();
+    [
+        "why",
+        "为什么",
+        "原因",
+        "设计",
+        "决策",
+        "history",
+        "blame",
+        "diff",
+        "演进",
+        "trace",
+    ].iter().any(|needle| q.contains(needle))
 }
 
 async fn build_memory_context(q_vec: &Option<Vec<f32>>, store: &MemoryStore) -> String {
@@ -702,8 +856,6 @@ async fn cmd_project(action: ProjectAction) -> Result<()> {
 async fn cmd_serve(path: &PathBuf, port: u16, provider: Option<&str>) -> Result<()> {
     use axum::{Router, routing::{post, get}, Json, extract::State};
     use std::sync::Arc;
-    use tokio::sync::RwLock;
-
     #[derive(serde::Deserialize)]
     struct AskReq { question: String, provider: Option<String> }
     #[derive(serde::Serialize)]
@@ -765,7 +917,7 @@ async fn cmd_serve(path: &PathBuf, port: u16, provider: Option<&str>) -> Result<
                 let kb_store  = KnowledgeStore::new(&knowledge_db_path(&srv.path)).await.unwrap();
                 let vi = VectorIndex::new(store.pool.clone()).await.unwrap();
                 let has_emb = vi.count().await.unwrap_or(0) > 0;
-                do_ask(&req.question, &*llm, &graph, &vi, has_emb, &mem_store, &kb_store)
+                do_ask(&req.question, &*llm, &graph, &store, &vi, has_emb, &mem_store, &kb_store)
                     .await.unwrap_or_else(|e| e.to_string())
             }
         };
@@ -799,40 +951,48 @@ async fn cmd_explain(target: &str, path: &PathBuf, provider: Option<&str>) -> Re
     let llm = require_llm(&cfg, provider)?;
 
     // Try to read as file first, then fall back to symbol lookup in graph
-    let (content, context_hint) = if std::path::Path::new(target).exists() {
+    if std::path::Path::new(target).exists() {
         let src = std::fs::read_to_string(target)?;
-        let hist = GitHistory::file_history(path, target, 5).ok();
-        let hist_str = hist.map(|h| {
-            h.commits.iter().map(|c| format!("  [{}] {} — {}", c.hash, c.message, c.author))
-                .collect::<Vec<_>>().join("\n")
-        }).unwrap_or_default();
-        (src, format!("File: {}\nRecent git history:\n{}", target, hist_str))
-    } else {
-        // Symbol lookup from graph
+        let llm: Arc<dyn LlmClient> = Arc::from(llm);
+        let trace = TraceAgent::new(llm.clone());
+        let report = trace.explain_file(path, target, &src).await?;
         let store = GraphStore::new(&graph_db_path(path)).await?;
         let graph = store.load_graph().await?;
-        match graph.find_node_by_name(target) {
-            Some(node) => {
-                let neighbors = graph.neighbors(node.id);
-                let ctx = format!("Symbol: {} ({:?})\nFile: {}\nRelated: {}",
-                    node.name, node.kind,
-                    node.file_path.as_deref().unwrap_or("unknown"),
-                    neighbors.iter().map(|(_, n)| n.name.as_str()).collect::<Vec<_>>().join(", ")
-                );
-                (node.description.clone().unwrap_or_else(|| node.name.clone()), ctx)
-            }
-            None => anyhow::bail!("'{}' not found as file or indexed symbol. Run `loci index` first.", target),
-        }
-    };
+        let vi = VectorIndex::new(store.pool.clone()).await?;
+        let anchors: Vec<Uuid> = graph.nodes.iter()
+            .filter(|n| n.kind == NodeKind::File && n.file_path.as_deref() == Some(target))
+            .map(|n| n.id)
+            .collect();
+        let _ = persist_trace_decision(
+            &store,
+            &vi,
+            &*llm,
+            &graph,
+            &anchors,
+            &format!("Decision: {}", target),
+            &report,
+        ).await;
+        println!("{}", report.to_markdown(&format!("Trace Report: {}", target)));
+        return Ok(());
+    }
 
+    // Symbol lookup from graph remains as a lightweight explore path.
+    let store = GraphStore::new(&graph_db_path(path)).await?;
+    let graph = store.load_graph().await?;
+    let node = graph.find_node_by_name(target)
+        .ok_or_else(|| anyhow::anyhow!("'{}' not found as file or indexed symbol. Run `loci index` first.", target))?;
+
+    let neighbors = graph.neighbors(node.id);
     let prompt = format!(
-        "Explain the following code/symbol to a developer who is new to this codebase.\n\
-         Be clear and concise. Cover: what it does, why it exists, key design decisions.\n\
+        "Explain this symbol to a developer who is new to the codebase.\n\
+         Cover: what it does, why it likely exists, and what related nodes matter.\n\
          Output Markdown.\n\n\
-         Context:\n{}\n\n\
-         Code:\n```\n{}\n```",
-        context_hint,
-        &content[..content.len().min(6000)]
+         Symbol: {} ({:?})\nFile: {}\nRelated: {}\nDescription: {}",
+        node.name,
+        node.kind,
+        node.file_path.as_deref().unwrap_or("unknown"),
+        neighbors.iter().map(|(_, n)| n.name.as_str()).collect::<Vec<_>>().join(", "),
+        node.description.as_deref().unwrap_or("")
     );
 
     let response = llm.chat(vec![Message { role: Role::User, content: prompt }], None).await?;
@@ -867,22 +1027,26 @@ async fn cmd_diff(commit: &str, path: &PathBuf, provider: Option<&str>) -> Resul
         return Ok(());
     }
 
-    // Truncate large diffs
-    let diff_snippet = &diff[..diff.len().min(8000)];
-
-    let prompt = format!(
-        "Analyze this git diff and provide:\n\
-         1. **Summary** — what changed in one paragraph\n\
-         2. **Changed modules** — list affected components\n\
-         3. **Impact** — potential side effects or things to watch out for\n\
-         4. **Suggested commit message** — conventional commit format\n\n\
-         Output Markdown.\n\n\
-         ```diff\n{}\n```",
-        diff_snippet
-    );
-
-    let response = llm.chat(vec![Message { role: Role::User, content: prompt }], None).await?;
-    if let loci_llm::LlmResponse::Text(t) = response { println!("{}", t); }
+    let llm: Arc<dyn LlmClient> = Arc::from(llm);
+    let trace = TraceAgent::new(llm.clone());
+    let report = trace.analyze_diff(commit, &diff).await?;
+    let store = GraphStore::new(&graph_db_path(path)).await?;
+    let graph = store.load_graph().await?;
+    let vi = VectorIndex::new(store.pool.clone()).await?;
+    let anchors: Vec<Uuid> = graph.nodes.iter()
+        .filter(|n| n.kind == NodeKind::Commit && (n.name == commit || n.name.starts_with(commit)))
+        .map(|n| n.id)
+        .collect();
+    let _ = persist_trace_decision(
+        &store,
+        &vi,
+        &*llm,
+        &graph,
+        &anchors,
+        &format!("Decision: diff {}", commit),
+        &report,
+    ).await;
+    println!("{}", report.to_markdown(&format!("Trace Report: diff {}", commit)));
     Ok(())
 }
 
@@ -902,6 +1066,12 @@ async fn cmd_history(file: &str, path: &PathBuf) -> Result<()> {
     for c in &history.commits {
         println!("  [{}] {} — {}", c.hash, c.message, c.author);
     }
+    if !history.blame_summary.is_empty() {
+        println!("\nBlame highlights:");
+        for (hash, line) in &history.blame_summary {
+            println!("  [{}] {}", hash, line);
+        }
+    }
     Ok(())
 }
 
@@ -913,6 +1083,128 @@ fn bs_dir(p: &PathBuf) -> PathBuf {
 fn graph_db_path(p: &PathBuf)     -> String { bs_dir(p).join("graph.db").to_string_lossy().to_string() }
 fn memory_db_path(p: &PathBuf)    -> String { bs_dir(p).join("memory.db").to_string_lossy().to_string() }
 fn knowledge_db_path(p: &PathBuf) -> String { bs_dir(p).join("knowledge.db").to_string_lossy().to_string() }
+
+async fn persist_trace_decision(
+    store: &GraphStore,
+    vector_index: &VectorIndex,
+    llm: &dyn LlmClient,
+    graph: &KnowledgeGraph,
+    anchor_ids: &[Uuid],
+    title: &str,
+    report: &TraceReport,
+) -> Result<Uuid> {
+    let decision = Node {
+        id: Uuid::new_v4(),
+        kind: NodeKind::Decision,
+        name: title.to_string(),
+        file_path: None,
+        description: Some(report.summary.clone()),
+        raw_source: Some(serde_json::to_string_pretty(report)?),
+        created_at: Utc::now(),
+    };
+    store.save_node(&decision).await?;
+
+    if let Ok(vec) = llm.embed(&format!("{}\n{}", title, report.summary)).await {
+        let _ = vector_index.upsert(decision.id, &vec).await;
+    }
+
+    for anchor_id in anchor_ids {
+        if graph.nodes.iter().any(|n| n.id == *anchor_id) {
+            let edge = Edge {
+                id: Uuid::new_v4(),
+                from: *anchor_id,
+                to: decision.id,
+                kind: EdgeKind::ExplainedBy,
+                label: Some("trace report".to_string()),
+            };
+            store.save_edge(&edge).await?;
+        }
+    }
+
+    persist_trace_evidence_edges(store, graph, decision.id, anchor_ids, report).await?;
+
+    Ok(decision.id)
+}
+
+async fn persist_trace_evidence_edges(
+    store: &GraphStore,
+    graph: &KnowledgeGraph,
+    decision_id: Uuid,
+    anchor_ids: &[Uuid],
+    report: &TraceReport,
+) -> Result<()> {
+    for evidence in &report.evidence {
+        let source = evidence.source.to_lowercase();
+
+        let mut matched_ids: Vec<Uuid> = Vec::new();
+
+        if source.contains("commit") || source.contains("blame") || source.contains("diff") {
+            for hash in extract_commit_hashes(&evidence.detail) {
+                matched_ids.extend(
+                    graph.nodes.iter()
+                        .filter(|n| n.kind == NodeKind::Commit && (n.name == hash || n.name.starts_with(&hash)))
+                        .map(|n| n.id)
+                );
+            }
+        }
+
+        if source.contains("code") || source.contains("file") {
+            matched_ids.extend(anchor_ids.iter().copied());
+        }
+
+        if source.contains("decision") || source.contains("concept") {
+            matched_ids.extend(
+                graph.nodes.iter()
+                    .filter(|n| matches!(n.kind, NodeKind::Concept | NodeKind::Decision))
+                    .filter(|n| {
+                        let name = n.name.to_lowercase();
+                        let desc = n.description.as_deref().unwrap_or("").to_lowercase();
+                        let detail = evidence.detail.to_lowercase();
+                        detail.contains(&name) || (!desc.is_empty() && detail.contains(&desc))
+                    })
+                    .map(|n| n.id)
+            );
+        }
+
+        matched_ids.sort_unstable();
+        matched_ids.dedup();
+
+        for matched_id in matched_ids {
+            let edge = Edge {
+                id: Uuid::new_v4(),
+                from: decision_id,
+                to: matched_id,
+                kind: EdgeKind::RelatedTo,
+                label: Some(format!("trace evidence: {}", evidence.source)),
+            };
+            store.save_edge(&edge).await?;
+        }
+    }
+
+    Ok(())
+}
+
+fn extract_commit_hashes(detail: &str) -> Vec<String> {
+    let mut hashes = Vec::new();
+    let mut current = String::new();
+
+    for ch in detail.chars() {
+        if ch.is_ascii_hexdigit() {
+            current.push(ch);
+        } else {
+            if (7..=40).contains(&current.len()) {
+                hashes.push(current.clone());
+            }
+            current.clear();
+        }
+    }
+
+    if (7..=40).contains(&current.len()) {
+        hashes.push(current);
+    }
+
+    hashes
+}
 
 fn require_llm(cfg: &BsConfig, provider: Option<&str>) -> Result<Box<dyn LlmClient>> {
     cfg.build_client(provider).map_err(|_| {

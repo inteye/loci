@@ -1,16 +1,15 @@
 use std::sync::Arc;
-use loci_core::{types::*, error::Result};
-use loci_llm::{LlmClient, LlmResponse, ToolDef};
+use loci_core::error::Result;
+use loci_llm::LlmClient;
 use loci_tools::{ToolRegistry, ToolContext};
-use uuid::Uuid;
-use chrono::Utc;
-use serde_json::json;
 
 pub mod planner;
 pub mod executor;
+pub mod trace;
 
 pub use planner::Planner;
 pub use executor::Executor;
+pub use trace::{TraceAgent, TraceEvidence, TraceReport, TraceTimelineEvent};
 
 /// Top-level agent runner: plan → execute → return result
 pub struct Agent {

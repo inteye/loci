@@ -23,6 +23,8 @@ pub enum NodeKind {
     Trait,
     Function,
     Concept,   // LLM-extracted abstract concept
+    Commit,    // Git commit as a traceability node
+    Decision,  // Derived design decision with supporting evidence
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +44,8 @@ pub enum EdgeKind {
     Implements,  // struct implements trait
     DependsOn,   // module depends on module
     RelatedTo,   // LLM-inferred semantic relation
+    ChangedIn,   // symbol/file changed in commit
+    ExplainedBy, // node explained by concept/decision
 }
 
 /// In-memory graph — persisted via GraphStore

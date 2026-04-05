@@ -5,7 +5,7 @@ use loci_agent::Agent;
 use loci_llm::openai::OpenAiClient;
 use loci_llm::config::BsConfig;
 use loci_tools::{ToolRegistry, ToolContext, shell::ShellExec, file::{FileRead, FileWrite}, http::HttpRequest};
-use loci_graph::{GraphStore, KnowledgeGraph, VectorIndex};
+use loci_graph::{GraphStore, VectorIndex};
 use loci_memory::MemoryStore;
 use loci_knowledge::KnowledgeStore;
 use loci_core::types::{Message, Role};
@@ -87,7 +87,7 @@ async fn handle_ask(
             let vi = VectorIndex::new(store.pool.clone()).await.unwrap();
             let has_emb = vi.count().await.unwrap_or(0) > 0;
             let mem_store = MemoryStore::new(&path.join(".bs/memory.db").to_string_lossy()).await.unwrap();
-            let kb_store  = KnowledgeStore::new(&path.join(".bs/knowledge.db").to_string_lossy()).await.unwrap();
+            let _kb_store = KnowledgeStore::new(&path.join(".bs/knowledge.db").to_string_lossy()).await.unwrap();
 
             let q_vec = llm.embed(&req.question).await.ok();
             let graph_ctx = if has_emb {
