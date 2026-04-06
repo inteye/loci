@@ -91,8 +91,8 @@
   - [x] 已补 `/api/v1/*` 版本化入口
   - [x] 已补统一 envelope 与基础错误码
   - [x] 已补 `/meta` 与最小 `/openapi.json`
-  - [ ] 补更完整的 OpenAPI schema 和响应示例
-  - [ ] 继续统一 handler 内部错误映射和状态码语义
+  - [x] 已补更完整的 OpenAPI schema 和主要响应描述
+  - [x] 已统一常见 handler 的错误映射与 HTTP 状态码语义
 
 ### P2 — 产品化
 
@@ -165,5 +165,5 @@
    - [x] 已补 server / VS Code 插件 的专用 explain/diff 入口
    - [ ] 继续清理零散旧命令和品牌文案残留（`.bs` 存储路径暂保持兼容）
 3. API 契约完善
-   - [ ] 补更完整的 OpenAPI schema
-   - [ ] 统一错误状态码与错误映射
+   - [x] 已补更完整的 OpenAPI schema
+   - [x] 已统一错误状态码与错误映射

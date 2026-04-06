@@ -1,6 +1,7 @@
 #![recursion_limit = "512"]
 
 use axum::{Router, routing::{post, get}, Json, extract::State};
+use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -267,25 +268,46 @@ struct ApiMetaResponse {
     error_codes: Vec<&'static str>,
 }
 
-fn api_ok<T: Serialize>(data: T) -> Json<ApiEnvelope<T>> {
-    Json(ApiEnvelope {
-        ok: true,
-        api_version: "v1",
-        data: Some(data),
-        error: None,
-    })
+type ApiResult<T> = (StatusCode, Json<ApiEnvelope<T>>);
+
+fn api_ok<T: Serialize>(data: T) -> ApiResult<T> {
+    (
+        StatusCode::OK,
+        Json(ApiEnvelope {
+            ok: true,
+            api_version: "v1",
+            data: Some(data),
+            error: None,
+        }),
+    )
 }
 
-fn api_err<T>(code: &'static str, message: impl Into<String>) -> Json<ApiEnvelope<T>> {
-    Json(ApiEnvelope {
-        ok: false,
-        api_version: "v1",
-        data: None,
-        error: Some(ApiErrorBody {
-            code,
-            message: message.into(),
+fn api_err_status<T>(status: StatusCode, code: &'static str, message: impl Into<String>) -> ApiResult<T> {
+    (
+        status,
+        Json(ApiEnvelope {
+            ok: false,
+            api_version: "v1",
+            data: None,
+            error: Some(ApiErrorBody {
+                code,
+                message: message.into(),
+            }),
         }),
-    })
+    )
+}
+
+fn api_err<T>(code: &'static str, message: impl Into<String>) -> ApiResult<T> {
+    let status = match code {
+        "empty_question" | "empty_target" | "empty_query" | "invalid_kind" | "invalid_path" => StatusCode::BAD_REQUEST,
+        "project_not_found" => StatusCode::NOT_FOUND,
+        "project_already_exists" => StatusCode::CONFLICT,
+        "index_missing" => StatusCode::PRECONDITION_FAILED,
+        "llm_not_configured" => StatusCode::SERVICE_UNAVAILABLE,
+        "knowledge_ingest_failed" => StatusCode::UNPROCESSABLE_ENTITY,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    api_err_status(status, code, message)
 }
 
 // ── handlers ──────────────────────────────────────────────────────────────────
@@ -294,7 +316,7 @@ async fn handle_health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok", version: env!("CARGO_PKG_VERSION") })
 }
 
-async fn handle_api_meta() -> Json<ApiEnvelope<ApiMetaResponse>> {
+async fn handle_api_meta() -> ApiResult<ApiMetaResponse> {
     api_ok(ApiMetaResponse {
         service: "loci-server",
         version: env!("CARGO_PKG_VERSION"),
@@ -1335,14 +1357,14 @@ async fn handle_memories(State(state): State<AppState>) -> Json<MemoryResponse> 
     }
 }
 
-async fn handle_health_v1() -> Json<ApiEnvelope<HealthResponse>> {
+async fn handle_health_v1() -> ApiResult<HealthResponse> {
     api_ok(HealthResponse { status: "ok", version: env!("CARGO_PKG_VERSION") })
 }
 
 async fn handle_run_v1(
     State(state): State<AppState>,
     Json(req): Json<RunRequest>,
-) -> Json<ApiEnvelope<serde_json::Value>> {
+) -> ApiResult<serde_json::Value> {
     let ctx = ToolContext {
         working_dir: req.working_dir,
         ..Default::default()
@@ -1352,7 +1374,7 @@ async fn handle_run_v1(
     api_ok(serde_json::json!({ "result": result }))
 }
 
-async fn handle_projects_v1(State(state): State<AppState>) -> Json<ApiEnvelope<ProjectListResponse>> {
+async fn handle_projects_v1(State(state): State<AppState>) -> ApiResult<ProjectListResponse> {
     let registry = load_registry();
     api_ok(ProjectListResponse {
         active: registry.active,
@@ -1364,7 +1386,7 @@ async fn handle_projects_v1(State(state): State<AppState>) -> Json<ApiEnvelope<P
 async fn handle_project_add_v1(
     State(state): State<AppState>,
     Json(req): Json<ProjectAddRequest>,
-) -> Json<ApiEnvelope<ProjectListResponse>> {
+) -> ApiResult<ProjectListResponse> {
     if req.name.trim().is_empty() || req.path.trim().is_empty() {
         return api_err("invalid_path", "Project name and path must not be empty");
     }
@@ -1389,7 +1411,7 @@ async fn handle_project_add_v1(
 async fn handle_project_use_v1(
     State(state): State<AppState>,
     Json(req): Json<ProjectUseRequest>,
-) -> Json<ApiEnvelope<ProjectListResponse>> {
+) -> ApiResult<ProjectListResponse> {
     let mut registry = load_registry();
     if let Some(project) = registry.projects.iter().find(|project| project.name == req.name).cloned() {
         registry.active = Some(project.name.clone());
@@ -1407,7 +1429,7 @@ async fn handle_project_use_v1(
 async fn handle_project_remove_v1(
     State(state): State<AppState>,
     Json(req): Json<ProjectRemoveRequest>,
-) -> Json<ApiEnvelope<ProjectListResponse>> {
+) -> ApiResult<ProjectListResponse> {
     let mut registry = load_registry();
     if !registry.projects.iter().any(|project| project.name == req.name) {
         return api_err("project_not_found", format!("Project '{}' not found", req.name));
@@ -1424,14 +1446,14 @@ async fn handle_project_remove_v1(
     })
 }
 
-async fn handle_knowledge_list_v1(State(state): State<AppState>) -> Json<ApiEnvelope<KnowledgeListResponse>> {
+async fn handle_knowledge_list_v1(State(state): State<AppState>) -> ApiResult<KnowledgeListResponse> {
     api_ok(handle_knowledge_list(State(state)).await.0)
 }
 
 async fn handle_knowledge_search_v1(
     State(state): State<AppState>,
     Json(req): Json<KnowledgeSearchRequest>,
-) -> Json<ApiEnvelope<KnowledgeListResponse>> {
+) -> ApiResult<KnowledgeListResponse> {
     if req.query.trim().is_empty() {
         return api_err("empty_query", "Query must not be empty");
     }
@@ -1441,7 +1463,7 @@ async fn handle_knowledge_search_v1(
 async fn handle_knowledge_add_v1(
     State(state): State<AppState>,
     Json(req): Json<KnowledgeAddRequest>,
-) -> Json<ApiEnvelope<KnowledgeAddResponse>> {
+) -> ApiResult<KnowledgeAddResponse> {
     if req.source.trim().is_empty() {
         return api_err("invalid_path", "Knowledge source must not be empty");
     }
@@ -1455,7 +1477,7 @@ async fn handle_knowledge_add_v1(
 async fn handle_history_v1(
     State(state): State<AppState>,
     Json(req): Json<HistoryRequest>,
-) -> Json<ApiEnvelope<HistoryResponse>> {
+) -> ApiResult<HistoryResponse> {
     if req.file.as_deref().map(|file| file.trim().is_empty()).unwrap_or(false) {
         return api_err("invalid_path", "History file path must not be empty");
     }
@@ -1465,7 +1487,7 @@ async fn handle_history_v1(
 async fn handle_ask_v1(
     State(state): State<AppState>,
     Json(req): Json<AskRequest>,
-) -> Json<ApiEnvelope<AskResponse>> {
+) -> ApiResult<AskResponse> {
     if req.question.trim().is_empty() {
         return api_err("empty_question", "Question must not be empty");
     }
@@ -1475,7 +1497,7 @@ async fn handle_ask_v1(
 async fn handle_explain_v1(
     State(state): State<AppState>,
     Json(req): Json<ExplainRequest>,
-) -> Json<ApiEnvelope<ExplainResponse>> {
+) -> ApiResult<ExplainResponse> {
     if req.target.trim().is_empty() {
         return api_err("empty_target", "Target must not be empty");
     }
@@ -1485,14 +1507,14 @@ async fn handle_explain_v1(
 async fn handle_diff_v1(
     State(state): State<AppState>,
     Json(req): Json<DiffRequest>,
-) -> Json<ApiEnvelope<DiffResponse>> {
+) -> ApiResult<DiffResponse> {
     api_ok(handle_diff(State(state), Json(req)).await.0)
 }
 
 async fn handle_doc_v1(
     State(state): State<AppState>,
     Json(req): Json<DocRequest>,
-) -> Json<ApiEnvelope<DocResponse>> {
+) -> ApiResult<DocResponse> {
     if let Some(kind) = req.kind.as_deref() {
         if !matches!(kind, "onboarding" | "module" | "handoff") {
             return api_err("invalid_kind", format!("Unsupported doc kind '{}'", kind));
@@ -1511,7 +1533,7 @@ async fn handle_doc_v1(
 async fn handle_eval_v1(
     State(state): State<AppState>,
     Json(req): Json<EvalRequest>,
-) -> Json<ApiEnvelope<EvalResponse>> {
+) -> ApiResult<EvalResponse> {
     let project_path = std::path::PathBuf::from(current_project_path(&state).await);
     if !project_has_index(&project_path).await {
         return api_err("index_missing", "No index. Run `loci index` first.");
@@ -1526,7 +1548,7 @@ async fn handle_eval_v1(
 async fn handle_trace_v1(
     State(state): State<AppState>,
     Json(req): Json<TraceRequest>,
-) -> Json<ApiEnvelope<TraceResponse>> {
+) -> ApiResult<TraceResponse> {
     let project_path = std::path::PathBuf::from(current_project_path(&state).await);
     if !project_has_index(&project_path).await {
         return api_err("index_missing", "No index. Run `loci index` first.");
@@ -1534,7 +1556,7 @@ async fn handle_trace_v1(
     api_ok(handle_trace(State(state), Json(req)).await.0)
 }
 
-async fn handle_graph_v1(State(state): State<AppState>) -> Json<ApiEnvelope<GraphResponse>> {
+async fn handle_graph_v1(State(state): State<AppState>) -> ApiResult<GraphResponse> {
     let project_path = std::path::PathBuf::from(current_project_path(&state).await);
     if !project_has_index(&project_path).await {
         return api_err("index_missing", "No index. Run `loci index` first.");
@@ -1542,7 +1564,7 @@ async fn handle_graph_v1(State(state): State<AppState>) -> Json<ApiEnvelope<Grap
     api_ok(handle_graph(State(state)).await.0)
 }
 
-async fn handle_memories_v1(State(state): State<AppState>) -> Json<ApiEnvelope<MemoryResponse>> {
+async fn handle_memories_v1(State(state): State<AppState>) -> ApiResult<MemoryResponse> {
     api_ok(handle_memories(State(state)).await.0)
 }
 
