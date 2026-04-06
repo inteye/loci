@@ -46,6 +46,10 @@ pub enum EdgeKind {
     RelatedTo,   // LLM-inferred semantic relation
     ChangedIn,   // symbol/file changed in commit
     ExplainedBy, // node explained by concept/decision
+    EvidenceFromFile,
+    EvidenceFromCommit,
+    EvidenceFromConcept,
+    EvidenceFromDecision,
 }
 
 /// In-memory graph — persisted via GraphStore

@@ -15,6 +15,7 @@ loci-tools   = { path = "../../crates/tools" }
 loci-graph   = { path = "../../crates/graph" }
 loci-memory  = { path = "../../crates/memory" }
 loci-knowledge = { path = "../../crates/knowledge" }
+loci-codebase = { path = "../../crates/codebase" }
 axum       = { workspace = true }
 tokio      = { workspace = true }
 serde      = { workspace = true }

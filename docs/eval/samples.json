@@ -1,0 +1,18 @@
+[
+  {
+    "category": "Architecture",
+    "prompt": "Summarize the high-level architecture of this repository."
+  },
+  {
+    "category": "Key Decisions",
+    "prompt": "What are the most important design decisions in this codebase, and why do they matter?"
+  },
+  {
+    "category": "Traceability",
+    "prompt": "Pick one important implementation area and explain how its recent history evolved."
+  },
+  {
+    "category": "Getting Started",
+    "prompt": "If a new developer joined today, where should they start and what should they understand first?"
+  }
+]

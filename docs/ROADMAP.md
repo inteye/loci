@@ -42,14 +42,15 @@
 
 - [ ] **统一项目认知层**
   - 定义 graph 为唯一项目事实主存
-  - memory 仅保存会话上下文和用户偏好
-  - knowledge 作为外部材料层，最终沉淀为 graph 节点/边
+  - [x] memory 已开始只承担会话上下文
+  - [x] knowledge 已开始收敛为外部材料层
+  - [x] knowledge / external material 到 graph 的最小沉淀链已接入
 
 - [ ] **专用 agent 路由**
   - `ask` -> Explore / Navigate
   - `explain` -> Explore / Trace
   - `diff` -> Trace
-  - `doc` -> Document
+  - [x] `doc` 已提供最小入口（`loci doc`）
 
 - [x] **真实项目验证**（待持续补案例）
 - [x] **`loci explain <file|symbol>`**
@@ -64,6 +65,7 @@
   - graph 已支持 `commit` / `decision` 节点与 trace 写回
 
 - [ ] **Trace 深化**
+  - [x] 已补稳定时间线骨架与归并
   - commit 聚类与更稳定的时间线重建
   - file / symbol / commit / decision 的细粒度证据关联
   - 输出证据、结论、置信度的稳定评测
@@ -80,26 +82,45 @@
 
 - [ ] **Decision 优先检索与消费**
   - `ask` 的 trace 类问题优先召回 `decision`
-  - 增加显式 `trace` 入口，直接查看决策链/证据链
-  - 让文档生成优先消费 `decision` / `concept`
+  - [x] 增加显式 `trace` 入口，直接查看决策链/证据链
+  - [x] `doc_generate` 已开始优先消费 `decision` / `concept`
 
 - [x] **`loci serve` 后台模式**
 - [x] **HTTP Server 基础端点**
+- [ ] **API 契约层**
+  - [x] 已补 `/api/v1/*` 版本化入口
+  - [x] 已补统一 envelope 与基础错误码
+  - [x] 已补 `/meta` 与最小 `/openapi.json`
+  - [ ] 补更完整的 OpenAPI schema 和响应示例
+  - [ ] 继续统一 handler 内部错误映射和状态码语义
 
 ### P2 — 产品化
 
 - [x] **Tauri 桌面 UI** — Chat / Graph / Memory 三个 Tab，调用 Tauri commands
 - [x] **VS Code 插件** — Ask / Explain / Diff / Index 四个命令，右键菜单集成
+- [ ] **UI 与当前主链路对齐**
+  - [ ] Tauri / server 暴露 `trace` / `doc` / `eval` / `explain` / `diff` 最小接口
+  - [x] 已补 Tauri `trace` command 和 server `/trace` 端点
+  - [x] 已补 Tauri `doc` command 和 server `/doc` 端点
+  - [x] 已补 Tauri `eval` command 和 server `/eval` 端点
+  - [x] 已补 server `/explain` 和 `/diff` 端点，供外部 UI 走专用入口
+  - [ ] 桌面端增加 `Trace` / `Docs` / `Eval` 视图，并提升 `Decision` / `Commit` / evidence 的可见性
+  - [x] 桌面端已补最小 `Trace` 视图，开始展示 `Decision` / `Commit` / evidence
+  - [x] 桌面端已补最小 `Docs` 视图，开始消费 graph 中的 `Decision` / `Concept`
+  - [x] 桌面端已补最小 `Eval` 视图，开始展示评分、理由和 drift check
+  - [x] VS Code 插件已改走 `/explain` / `/diff` 专用入口
+  - [ ] UI 和命令文案统一到 `loci`，清理旧的 `sage` 和旧命令文案残留
+  - [x] 桌面端已开始切到 `loci` 命名
+  - [x] VS Code 插件已开始切到 `loci` 命名和配置前缀
 
 - [x] **多项目管理** — `loci project add/list/use/remove`，注册表存 `~/.config/bs/projects.json`
 - [x] **Skills 系统** — `loci skill`，内置 code_review / commit_message / doc_generate / pr_description
 - [x] **Harness 执行沙箱** — 危险命令拦截（rm/DROP/shutdown 等），审计日志写 `.bs/audit.log`
 
 - [ ] **文档产出统一化**
-  - 模块说明
-  - onboarding 文档
-  - 交接文档
-  - 输出中区分事实和推断
+  - [x] onboarding / module / handoff 最小入口已接入
+  - [x] 输出中区分事实和推断（通过 prompt 约束）
+  - [ ] 补更稳定的模板与评测
 
 ### P3 — 长期
 
@@ -118,9 +139,9 @@
 
 ## 技术债
 
-- [ ] `graph / memory / knowledge` 三层边界不清，存在事实源分裂
+- [ ] `graph / memory / knowledge` 三层边界已开始收口，但外部材料向 graph 的沉淀链仍不完整
 - [ ] `crates/agent` 仍偏通用 planner/executor，和垂直产品定位不一致
-- [ ] `Trace` 仍缺少稳定的时间线归并和更细粒度证据边类型
+- [ ] `Trace` 仍缺少更强的 commit 聚类和跨文件时间线整合
 - [x] 知识图谱重建时未清理旧节点（已修复：`store.clear()` on re-index）
 - [x] 问答后的知识沉淀已开始回写图谱（`concept` / `decision`）
 - [ ] 向量索引在节点数 >10 万时性能未验证
@@ -133,7 +154,16 @@
 
 优先按下面顺序推进：
 
-1. `loci trace <file|commit>`：显式暴露决策链和证据链
-2. 把 `Decision` 的 evidence 从 `RelatedTo` 细化为更明确的边类型
-3. 让文档生成优先消费 `Decision` / `Concept`
-4. 补真实项目评测和基础测试
+1. 补真实项目评测和基础测试
+   - [x] 已提供最小 `loci eval` 入口
+   - [x] 已补基础评分标准与结果落盘
+   - [x] 已补评测样本文件和最小结果对比
+2. UI 对齐当前产品能力
+   - [x] 已补桌面端 `trace` 可视化和 Tauri/server trace 接口
+   - [x] 已补 `doc` 入口
+   - [x] 已补 `eval` 入口
+   - [x] 已补 server / VS Code 插件 的专用 explain/diff 入口
+   - [ ] 继续清理零散旧命令和品牌文案残留（`.bs` 存储路径暂保持兼容）
+3. API 契约完善
+   - [ ] 补更完整的 OpenAPI schema
+   - [ ] 统一错误状态码与错误映射

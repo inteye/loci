@@ -13,9 +13,10 @@ use loci_skills::SkillRegistry;
 use loci_core::types::{Message, Role, MemoryScope};
 use uuid::Uuid;
 use chrono::Utc;
+use serde::{Serialize, Deserialize};
 
 #[derive(Parser)]
-#[command(name = "loci", about = "Sage — codebase understanding agent")]
+#[command(name = "loci", about = "loci — codebase understanding agent")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -65,6 +66,32 @@ enum Command {
         path: PathBuf,
         #[arg(long)]
         provider: Option<String>,
+    },
+    /// Show the stored decision chain and evidence graph for a file or commit
+    Trace {
+        /// File path or commit hash prefix
+        target: String,
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Generate project documentation from the graph, decisions, and concepts
+    Doc {
+        /// Document kind: onboarding, module, handoff
+        #[arg(default_value = "onboarding")]
+        kind: String,
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Run a lightweight real-project evaluation against the indexed codebase
+    Eval {
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     /// Run as background server (watches files + serves HTTP API)
     Serve {
@@ -165,6 +192,9 @@ async fn main() -> Result<()> {
         Command::History { file, path }                  => cmd_history(&file, &path).await,
         Command::Explain { target, path, provider }      => cmd_explain(&target, &path, provider.as_deref()).await,
         Command::Diff { commit, path, provider }         => cmd_diff(&commit, &path, provider.as_deref()).await,
+        Command::Trace { target, path }                  => cmd_trace(&target, &path).await,
+        Command::Doc { kind, path, provider }           => cmd_doc(&kind, &path, provider.as_deref()).await,
+        Command::Eval { path, provider, output }       => cmd_eval(&path, provider.as_deref(), output.as_ref()).await,
         Command::Serve { path, port, provider }          => cmd_serve(&path, port, provider.as_deref()).await,
         Command::Project { action }                      => cmd_project(action).await,
         Command::Skill { name, input, path, provider }   => cmd_skill(name.as_deref(), input.as_deref(), &path, provider.as_deref()).await,
@@ -354,7 +384,7 @@ async fn cmd_ask(question: Option<&str>, path: &PathBuf, provider: Option<&str>)
     }
 
     // Interactive chat mode
-    println!("Sage chat (type 'exit' or Ctrl+D to quit)\n");
+    println!("loci chat (type 'exit' or Ctrl+D to quit)\n");
     let mut rl = DefaultEditor::new()?;
     let mut session_history: Vec<Message> = Vec::new();
 
@@ -464,7 +494,7 @@ async fn persist_answer_artifacts(
 ) {
     let mem_text = format!("Q: {}\nA: {}", question, &answer[..answer.len().min(500)]);
     let mem_vec = llm.embed(&mem_text).await.ok();
-    let _ = remember(mem_store, &mem_text, MemoryScope::Project, None, mem_vec).await;
+    let _ = remember(mem_store, &mem_text, MemoryScope::Session, None, mem_vec).await;
 
     auto_extract_knowledge(question, answer, llm, kb_store, graph, graph_store, vector_index).await;
 }
@@ -473,14 +503,14 @@ async fn auto_extract_knowledge(
     question: &str,
     answer: &str,
     llm: &dyn LlmClient,
-    kb: &KnowledgeStore,
+    _kb: &KnowledgeStore,
     graph: &KnowledgeGraph,
     graph_store: &GraphStore,
     vector_index: &VectorIndex,
 ) {
     let prompt = format!(
         "Does this Q&A contain a reusable technical insight, design decision, or explanation \
-         worth saving to a knowledge base? If yes, extract it as a single concise paragraph. \
+         worth saving to the project graph? If yes, extract it as a single concise paragraph. \
          If no, reply with exactly: SKIP\n\nQ: {}\nA: {}",
         question, &answer[..answer.len().min(800)]
     );
@@ -489,17 +519,6 @@ async fn auto_extract_knowledge(
     ).await {
         let t = t.trim().to_string();
         if t != "SKIP" && !t.is_empty() {
-            let k = loci_core::types::Knowledge {
-                id: Uuid::new_v4(),
-                source: loci_core::types::KnowledgeSource::Auto,
-                content: t.clone(),
-                embedding: None,
-                project_id: None,
-                tags: vec!["auto-extracted".to_string()],
-                created_at: Utc::now(),
-            };
-            let _ = kb.save(&k).await;
-
             let concept = Node {
                 id: Uuid::new_v4(),
                 kind: NodeKind::Concept,
@@ -600,13 +619,13 @@ fn is_trace_question(question: &str) -> bool {
 }
 
 async fn build_memory_context(q_vec: &Option<Vec<f32>>, store: &MemoryStore) -> String {
-    let mems = store.recall(q_vec.as_deref(), None, None, 5).await.unwrap_or_default();
+    let mems = store.recall(q_vec.as_deref(), Some(MemoryScope::Session), None, 5).await.unwrap_or_default();
     if mems.is_empty() { return String::new(); }
     format!("\n## Past context\n{}", mems.iter().map(|m| format!("- {}", m.content)).collect::<Vec<_>>().join("\n"))
 }
 
 async fn build_kb_context(q_vec: &Option<Vec<f32>>, store: &KnowledgeStore) -> String {
-    let items = store.search(q_vec.as_deref(), None, 3).await.unwrap_or_default();
+    let items = store.search_external(q_vec.as_deref(), None, 3).await.unwrap_or_default();
     if items.is_empty() { return String::new(); }
     format!("\n## Knowledge base\n{}", items.iter().map(|k| format!("---\n{}", &k.content[..k.content.len().min(800)])).collect::<Vec<_>>().join("\n"))
 }
@@ -644,6 +663,17 @@ async fn cmd_knowledge(action: KnowledgeAction, path: &PathBuf, provider: Option
         KnowledgeAction::Add { source } => {
             let cfg = BsConfig::load(path).unwrap_or_default();
             let llm = cfg.build_client(provider).ok();
+            let graph_store = GraphStore::new(&graph_db_path(path)).await.ok();
+            let graph = if let Some(store) = &graph_store {
+                store.load_graph().await.ok()
+            } else {
+                None
+            };
+            let vector_index = if let Some(store) = &graph_store {
+                VectorIndex::new(store.pool.clone()).await.ok()
+            } else {
+                None
+            };
 
             let content_for_embed;
             let k = if source.starts_with("http://") || source.starts_with("https://") {
@@ -660,7 +690,7 @@ async fn cmd_knowledge(action: KnowledgeAction, path: &PathBuf, provider: Option
             };
 
             // Generate embedding if LLM available
-            if let Some(llm) = llm {
+            if let Some(ref llm) = llm {
                 let snippet = &content_for_embed[..content_for_embed.len().min(2000)];
                 if let Ok(vec) = llm.embed(snippet).await {
                     let mut k2 = k.clone();
@@ -669,11 +699,15 @@ async fn cmd_knowledge(action: KnowledgeAction, path: &PathBuf, provider: Option
                 }
             }
 
+            if let (Some(llm), Some(store), Some(graph), Some(vi)) = (llm.as_deref(), graph_store.as_ref(), graph.as_ref(), vector_index.as_ref()) {
+                let _ = persist_external_knowledge_to_graph(store, vi, llm, graph, &k).await;
+            }
+
             println!("Added: {} chars from {}", content_for_embed.len(), source);
         }
 
         KnowledgeAction::List => {
-            let items = kb.list(20).await?;
+            let items = kb.list_external(20).await?;
             if items.is_empty() { println!("Knowledge base is empty."); return Ok(()); }
             for item in &items {
                 let src = match &item.source {
@@ -693,7 +727,7 @@ async fn cmd_knowledge(action: KnowledgeAction, path: &PathBuf, provider: Option
                 .and_then(|llm| tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(llm.embed(&query)).ok()
                 }));
-            let results = kb.search(q_vec.as_deref(), Some(&query), 5).await?;
+            let results = kb.search_external(q_vec.as_deref(), Some(&query), 5).await?;
             if results.is_empty() { println!("No results."); return Ok(()); }
             for (i, item) in results.iter().enumerate() {
                 println!("\n[{}] {}", i+1, &item.content[..item.content.len().min(300)]);
@@ -728,7 +762,18 @@ async fn cmd_knowledge(action: KnowledgeAction, path: &PathBuf, provider: Option
                                             }))
                                     } else { None };
                                     match ingest_file(&kb, &p, embedding, None).await {
-                                        Ok(k) => println!("{} chars", k.content.len()),
+                                        Ok(k) => {
+                                            if let Some(ref llm) = llm {
+                                                if let Ok(store) = GraphStore::new(&graph_db_path(path)).await {
+                                                    if let Ok(graph) = store.load_graph().await {
+                                                        if let Ok(vi) = VectorIndex::new(store.pool.clone()).await {
+                                                            let _ = persist_external_knowledge_to_graph(&store, &vi, &**llm, &graph, &k).await;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            println!("{} chars", k.content.len())
+                                        }
                                         Err(e) => println!("error: {}", e),
                                     }
                                 }
@@ -1075,6 +1120,365 @@ async fn cmd_history(file: &str, path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_trace(target: &str, path: &PathBuf) -> Result<()> {
+    let store = GraphStore::new(&graph_db_path(path)).await?;
+    let graph = store.load_graph().await?;
+    if graph.nodes.is_empty() {
+        println!("No index. Run `loci index` first.");
+        return Ok(());
+    }
+
+    let anchor = if std::path::Path::new(target).exists() {
+        graph.nodes.iter().find(|n| n.kind == NodeKind::File && n.file_path.as_deref() == Some(target))
+    } else {
+        graph.nodes.iter().find(|n|
+            (n.kind == NodeKind::Commit && (n.name == target || n.name.starts_with(target))) ||
+            n.name.eq_ignore_ascii_case(target)
+        )
+    };
+
+    let Some(anchor) = anchor else {
+        println!("No trace target found for '{}'. Run `loci index`, `loci explain`, or `loci diff` first.", target);
+        return Ok(());
+    };
+
+    let mut ids: std::collections::HashSet<Uuid> = std::collections::HashSet::from([anchor.id]);
+    for (_, node) in graph.neighbors(anchor.id) {
+        ids.insert(node.id);
+    }
+
+    let decisions: Vec<&Node> = graph.nodes.iter()
+        .filter(|n| ids.contains(&n.id) && n.kind == NodeKind::Decision)
+        .collect();
+    let commits: Vec<&Node> = graph.nodes.iter()
+        .filter(|n| ids.contains(&n.id) && n.kind == NodeKind::Commit)
+        .collect();
+    let related: Vec<&Node> = graph.nodes.iter()
+        .filter(|n| ids.contains(&n.id) && !matches!(n.kind, NodeKind::Decision | NodeKind::Commit))
+        .collect();
+
+    println!("# Trace: {}\n", target);
+    println!("## Anchor");
+    println!("- {:?}: {}", anchor.kind, anchor.name);
+
+    if !decisions.is_empty() {
+        println!("\n## Decisions");
+        for decision in decisions {
+            println!("- {}", decision.name);
+            if let Some(desc) = &decision.description {
+                println!("  {}", desc);
+            }
+
+            let evidence_edges: Vec<&Edge> = graph.edges.iter()
+                .filter(|e| e.from == decision.id && is_evidence_edge(&e.kind))
+                .collect();
+            if !evidence_edges.is_empty() {
+                println!("  Evidence:");
+                for edge in evidence_edges {
+                    if let Some(node) = graph.nodes.iter().find(|n| n.id == edge.to) {
+                        println!(
+                            "  - {} ({:?}) [{}]",
+                            node.name,
+                            node.kind,
+                            edge_kind_label(&edge.kind, edge.label.as_deref().unwrap_or("evidence"))
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    if !commits.is_empty() {
+        println!("\n## Commits");
+        for commit in commits {
+            println!("- {}", commit.name);
+            if let Some(desc) = &commit.description {
+                println!("  {}", desc);
+            }
+        }
+    }
+
+    if !related.is_empty() {
+        println!("\n## Related Nodes");
+        for node in related {
+            if node.id != anchor.id {
+                println!("- {:?}: {}", node.kind, node.name);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_doc(kind: &str, path: &PathBuf, provider: Option<&str>) -> Result<()> {
+    let cfg = BsConfig::load(path).unwrap_or_default();
+    let llm = require_llm(&cfg, provider)?;
+    let store = GraphStore::new(&graph_db_path(path)).await?;
+    let graph = store.load_graph().await?;
+
+    if graph.nodes.is_empty() {
+        println!("No index. Run `loci index` first.");
+        return Ok(());
+    }
+
+    let decisions: Vec<&Node> = graph.nodes.iter()
+        .filter(|n| n.kind == NodeKind::Decision)
+        .take(12)
+        .collect();
+    let concepts: Vec<&Node> = graph.nodes.iter()
+        .filter(|n| n.kind == NodeKind::Concept)
+        .take(12)
+        .collect();
+    let files: Vec<&Node> = graph.nodes.iter()
+        .filter(|n| n.kind == NodeKind::File)
+        .take(12)
+        .collect();
+
+    let context = format!(
+        "## Decisions\n{}\n\n## Concepts\n{}\n\n## Files\n{}",
+        decisions.iter().map(|n| format!("- {}: {}", n.name, n.description.as_deref().unwrap_or(""))).collect::<Vec<_>>().join("\n"),
+        concepts.iter().map(|n| format!("- {}: {}", n.name, n.description.as_deref().unwrap_or(""))).collect::<Vec<_>>().join("\n"),
+        files.iter().map(|n| format!("- {}", n.name)).collect::<Vec<_>>().join("\n"),
+    );
+
+    let prompt = match kind {
+        "module" => format!(
+            "Generate a module summary document from the project graph.\n\
+             Prioritize factual description first, then inferred design rationale.\n\
+             Output Markdown with sections: Overview, Key Modules, Decisions, Open Questions.\n\n{}",
+            context
+        ),
+        "handoff" => format!(
+            "Generate a handoff document for a new maintainer from the project graph.\n\
+             Prioritize factual description first, then inferred design rationale.\n\
+             Output Markdown with sections: What Matters Most, Important Decisions, Risk Areas, Open Questions.\n\n{}",
+            context
+        ),
+        _ => format!(
+            "Generate an onboarding guide for a new developer from the project graph.\n\
+             Prioritize factual description first, then inferred design rationale.\n\
+             Output Markdown with sections: Project Overview, Where to Start, Important Decisions, Core Concepts, Open Questions.\n\n{}",
+            context
+        ),
+    };
+
+    let response = llm.chat(vec![Message { role: Role::User, content: prompt }], None).await?;
+    if let loci_llm::LlmResponse::Text(t) = response {
+        println!("{}", t);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EvalSample {
+    category: String,
+    prompt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct EvalScore {
+    score: u8,
+    rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EvalResult {
+    category: String,
+    prompt: String,
+    answer: String,
+    score: EvalScore,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct EvalReport {
+    generated_at: String,
+    project_path: String,
+    average_score: f32,
+    results: Vec<EvalResult>,
+    drift_check: Vec<String>,
+}
+
+async fn cmd_eval(path: &PathBuf, provider: Option<&str>, output: Option<&PathBuf>) -> Result<()> {
+    let cfg = BsConfig::load(path).unwrap_or_default();
+    let llm = require_llm(&cfg, provider)?;
+    let store = GraphStore::new(&graph_db_path(path)).await?;
+    let graph = store.load_graph().await?;
+
+    if graph.nodes.is_empty() {
+        println!("No index. Run `loci index` first.");
+        return Ok(());
+    }
+
+    let mem_store = MemoryStore::new(&memory_db_path(path)).await?;
+    let kb_store = KnowledgeStore::new(&knowledge_db_path(path)).await?;
+    let vector_index = VectorIndex::new(store.pool.clone()).await?;
+    let has_embeddings = vector_index.count().await? > 0;
+
+    let prompts = load_eval_samples(path)?;
+
+    println!("# Evaluation Report\n");
+    println!("- Project: {}", path.display());
+    println!("- Questions: {}", prompts.len());
+    println!("- Uses graph, decisions, concepts, memories, and knowledge base\n");
+
+    let mut results = Vec::new();
+    for sample in prompts {
+        let answer = do_ask(
+            &sample.prompt,
+            &*llm,
+            &graph,
+            &store,
+            &vector_index,
+            has_embeddings,
+            &mem_store,
+            &kb_store,
+        ).await?;
+
+        let score = score_eval_answer(&*llm, &sample, &answer).await.unwrap_or_else(|_| EvalScore {
+            score: 0,
+            rationale: "Scoring failed.".to_string(),
+        });
+
+        println!("## {}\n", sample.category);
+        println!("**Prompt:** {}\n", sample.prompt);
+        println!("**Score:** {}/5\n", score.score);
+        println!("{}\n", answer);
+
+        results.push(EvalResult {
+            category: sample.category,
+            prompt: sample.prompt,
+            answer,
+            score,
+        });
+    }
+
+    let average_score = if results.is_empty() {
+        0.0
+    } else {
+        results.iter().map(|r| r.score.score as f32).sum::<f32>() / results.len() as f32
+    };
+    let previous = load_previous_eval_report(path);
+
+    println!("## Drift Check\n");
+    println!("- This evaluation stays on the roadmap path: it validates codebase understanding quality on a real indexed project.");
+    println!("- It does not add a new generic framework; it reuses the existing ask pipeline and current project graph.");
+    if let Some(prev) = &previous {
+        println!("- Previous average score: {:.2}/5", prev.average_score);
+        println!("- Score delta: {:+.2}", average_score - prev.average_score);
+    }
+
+    let report = EvalReport {
+        generated_at: Utc::now().to_rfc3339(),
+        project_path: path.display().to_string(),
+        average_score,
+        results,
+        drift_check: vec![
+            "Validates codebase understanding quality on a real indexed project.".to_string(),
+            "Reuses the existing ask pipeline and project graph instead of introducing a generic framework.".to_string(),
+        ],
+    };
+
+    let out_path = output.cloned().unwrap_or_else(|| {
+        bs_dir(path).join("eval").join(format!("report-{}.md", Utc::now().format("%Y%m%d-%H%M%S")))
+    });
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&out_path, render_eval_report(&report))?;
+    let json_path = out_path.with_extension("json");
+    std::fs::write(&json_path, serde_json::to_string_pretty(&report)?)?;
+    println!("\nSaved report to {}", out_path.display());
+    println!("Saved machine-readable report to {}", json_path.display());
+
+    Ok(())
+}
+
+async fn score_eval_answer(llm: &dyn LlmClient, sample: &EvalSample, answer: &str) -> Result<EvalScore> {
+    let prompt = format!(
+        "Score this codebase-understanding answer on a 0-5 scale.\n\
+         Judge accuracy, specificity, use of design decisions/concepts, and usefulness to a developer.\n\
+         Respond with JSON only: {{\"score\": <0-5>, \"rationale\": \"...\"}}\n\n\
+         Category: {}\nPrompt: {}\nAnswer:\n{}",
+        sample.category,
+        sample.prompt,
+        &answer[..answer.len().min(4000)]
+    );
+
+    let response = llm.chat(vec![Message { role: Role::User, content: prompt }], None).await?;
+    match response {
+        loci_llm::LlmResponse::Text(text) => Ok(serde_json::from_str::<EvalScore>(&text).unwrap_or_else(|_| EvalScore {
+            score: 0,
+            rationale: text,
+        })),
+        _ => Ok(EvalScore {
+            score: 0,
+            rationale: "Scorer returned non-text output.".to_string(),
+        }),
+    }
+}
+
+fn render_eval_report(report: &EvalReport) -> String {
+    let mut out = String::new();
+    out.push_str("# Evaluation Report\n\n");
+    out.push_str(&format!("- Generated: {}\n", report.generated_at));
+    out.push_str(&format!("- Project: {}\n", report.project_path));
+    out.push_str(&format!("- Average score: {:.2}/5\n\n", report.average_score));
+
+    for result in &report.results {
+        out.push_str(&format!("## {}\n\n", result.category));
+        out.push_str(&format!("**Prompt:** {}\n\n", result.prompt));
+        out.push_str(&format!("**Score:** {}/5\n\n", result.score.score));
+        out.push_str(&format!("**Rationale:** {}\n\n", result.score.rationale));
+        out.push_str(&result.answer);
+        out.push_str("\n\n");
+    }
+
+    out.push_str("## Drift Check\n\n");
+    for line in &report.drift_check {
+        out.push_str(&format!("- {}\n", line));
+    }
+    out
+}
+
+fn load_eval_samples(project_path: &PathBuf) -> Result<Vec<EvalSample>> {
+    let repo_path = project_path.join("docs/eval/samples.json");
+    if repo_path.exists() {
+        let text = std::fs::read_to_string(&repo_path)?;
+        return Ok(serde_json::from_str(&text)?);
+    }
+
+    Ok(vec![
+        EvalSample {
+            category: "Architecture".to_string(),
+            prompt: "Summarize the high-level architecture of this repository.".to_string(),
+        },
+        EvalSample {
+            category: "Key Decisions".to_string(),
+            prompt: "What are the most important design decisions in this codebase, and why do they matter?".to_string(),
+        },
+        EvalSample {
+            category: "Traceability".to_string(),
+            prompt: "Pick one important implementation area and explain how its recent history evolved.".to_string(),
+        },
+        EvalSample {
+            category: "Getting Started".to_string(),
+            prompt: "If a new developer joined today, where should they start and what should they understand first?".to_string(),
+        },
+    ])
+}
+
+fn load_previous_eval_report(project_path: &PathBuf) -> Option<EvalReport> {
+    let eval_dir = bs_dir(project_path).join("eval");
+    let mut reports: Vec<std::path::PathBuf> = std::fs::read_dir(&eval_dir).ok()?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .collect();
+    reports.sort();
+    let latest = reports.pop()?;
+    let text = std::fs::read_to_string(latest).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn bs_dir(p: &PathBuf) -> PathBuf {
@@ -1137,8 +1541,10 @@ async fn persist_trace_evidence_edges(
         let source = evidence.source.to_lowercase();
 
         let mut matched_ids: Vec<Uuid> = Vec::new();
+        let mut edge_kind: Option<EdgeKind> = None;
 
         if source.contains("commit") || source.contains("blame") || source.contains("diff") {
+            edge_kind = Some(EdgeKind::EvidenceFromCommit);
             for hash in extract_commit_hashes(&evidence.detail) {
                 matched_ids.extend(
                     graph.nodes.iter()
@@ -1149,10 +1555,16 @@ async fn persist_trace_evidence_edges(
         }
 
         if source.contains("code") || source.contains("file") {
+            edge_kind.get_or_insert(EdgeKind::EvidenceFromFile);
             matched_ids.extend(anchor_ids.iter().copied());
         }
 
         if source.contains("decision") || source.contains("concept") {
+            edge_kind.get_or_insert(if source.contains("decision") {
+                EdgeKind::EvidenceFromDecision
+            } else {
+                EdgeKind::EvidenceFromConcept
+            });
             matched_ids.extend(
                 graph.nodes.iter()
                     .filter(|n| matches!(n.kind, NodeKind::Concept | NodeKind::Decision))
@@ -1174,7 +1586,7 @@ async fn persist_trace_evidence_edges(
                 id: Uuid::new_v4(),
                 from: decision_id,
                 to: matched_id,
-                kind: EdgeKind::RelatedTo,
+                kind: edge_kind.clone().unwrap_or(EdgeKind::RelatedTo),
                 label: Some(format!("trace evidence: {}", evidence.source)),
             };
             store.save_edge(&edge).await?;
@@ -1182,6 +1594,73 @@ async fn persist_trace_evidence_edges(
     }
 
     Ok(())
+}
+
+async fn persist_external_knowledge_to_graph(
+    store: &GraphStore,
+    vector_index: &VectorIndex,
+    llm: &dyn LlmClient,
+    graph: &KnowledgeGraph,
+    knowledge: &loci_core::types::Knowledge,
+) -> Result<Uuid> {
+    let source_label = match &knowledge.source {
+        loci_core::types::KnowledgeSource::File { path } => path.clone(),
+        loci_core::types::KnowledgeSource::Url { url } => url.clone(),
+        loci_core::types::KnowledgeSource::Conversation { .. } => "[conversation]".to_string(),
+        loci_core::types::KnowledgeSource::Auto => "[auto]".to_string(),
+    };
+
+    let prompt = format!(
+        "Extract one reusable project concept from this external material.\n\
+         Reply with exactly one concise paragraph, or SKIP if nothing reusable stands out.\n\n\
+         Source: {}\n\n{}",
+        source_label,
+        &knowledge.content[..knowledge.content.len().min(3000)]
+    );
+
+    let extracted = match llm.chat(vec![Message { role: Role::User, content: prompt }], None).await? {
+        loci_llm::LlmResponse::Text(text) => text.trim().to_string(),
+        _ => "SKIP".to_string(),
+    };
+
+    if extracted == "SKIP" || extracted.is_empty() {
+        return Ok(Uuid::nil());
+    }
+
+    let node = Node {
+        id: Uuid::new_v4(),
+        kind: NodeKind::Concept,
+        name: format!("External: {}", source_label.chars().take(80).collect::<String>()),
+        file_path: None,
+        description: Some(extracted.clone()),
+        raw_source: Some(knowledge.content[..knowledge.content.len().min(3000)].to_string()),
+        created_at: Utc::now(),
+    };
+    store.save_node(&node).await?;
+
+    if let Ok(vec) = llm.embed(&extracted).await {
+        let _ = vector_index.upsert(node.id, &vec).await;
+    }
+
+    match &knowledge.source {
+        loci_core::types::KnowledgeSource::File { path } => {
+            for file_node in graph.nodes.iter().filter(|n| n.kind == NodeKind::File && n.file_path.as_deref() == Some(path.as_str())) {
+                let edge = Edge {
+                    id: Uuid::new_v4(),
+                    from: file_node.id,
+                    to: node.id,
+                    kind: EdgeKind::ExplainedBy,
+                    label: Some("external material".to_string()),
+                };
+                store.save_edge(&edge).await?;
+            }
+        }
+        loci_core::types::KnowledgeSource::Url { .. } => {}
+        loci_core::types::KnowledgeSource::Conversation { .. } => {}
+        loci_core::types::KnowledgeSource::Auto => {}
+    }
+
+    Ok(node.id)
 }
 
 fn extract_commit_hashes(detail: &str) -> Vec<String> {
@@ -1206,10 +1685,49 @@ fn extract_commit_hashes(detail: &str) -> Vec<String> {
     hashes
 }
 
+fn is_evidence_edge(kind: &EdgeKind) -> bool {
+    matches!(
+        kind,
+        EdgeKind::RelatedTo
+            | EdgeKind::EvidenceFromFile
+            | EdgeKind::EvidenceFromCommit
+            | EdgeKind::EvidenceFromConcept
+            | EdgeKind::EvidenceFromDecision
+    )
+}
+
+fn edge_kind_label(kind: &EdgeKind, fallback: &str) -> String {
+    match kind {
+        EdgeKind::EvidenceFromFile => "evidence:file".to_string(),
+        EdgeKind::EvidenceFromCommit => "evidence:commit".to_string(),
+        EdgeKind::EvidenceFromConcept => "evidence:concept".to_string(),
+        EdgeKind::EvidenceFromDecision => "evidence:decision".to_string(),
+        _ => fallback.to_string(),
+    }
+}
+
 fn require_llm(cfg: &BsConfig, provider: Option<&str>) -> Result<Box<dyn LlmClient>> {
     cfg.build_client(provider).map_err(|_| {
         eprintln!("No LLM configured. Create .bs/config.toml:");
         eprintln!("  cp config.example.toml .bs/config.toml");
         anyhow::anyhow!("LLM not configured")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_commit_hashes, is_trace_question};
+
+    #[test]
+    fn extracts_commit_hashes_from_mixed_text() {
+        let hashes = extract_commit_hashes("commit b841111 fixed it, follow-up 2676630 touched graph");
+        assert_eq!(hashes, vec!["b841111".to_string(), "2676630".to_string()]);
+    }
+
+    #[test]
+    fn detects_trace_question_in_english_and_chinese() {
+        assert!(is_trace_question("why was this designed this way?"));
+        assert!(is_trace_question("这个设计为什么这么做？"));
+        assert!(!is_trace_question("这个模块有哪些公开函数？"));
+    }
 }

@@ -95,6 +95,18 @@ impl KnowledgeStore {
         self.search(None, None, limit).await
     }
 
+    pub async fn search_external(&self, query_embedding: Option<&[f32]>, keyword: Option<&str>, limit: usize) -> Result<Vec<Knowledge>> {
+        let items = self.search(query_embedding, keyword, limit.saturating_mul(4).max(20)).await?;
+        Ok(items.into_iter()
+            .filter(|k| matches!(k.source, KnowledgeSource::File { .. } | KnowledgeSource::Url { .. }))
+            .take(limit)
+            .collect())
+    }
+
+    pub async fn list_external(&self, limit: usize) -> Result<Vec<Knowledge>> {
+        self.search_external(None, None, limit).await
+    }
+
     pub async fn count(&self) -> Result<i64> {
         let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM knowledge")
             .fetch_one(&self.pool).await?;

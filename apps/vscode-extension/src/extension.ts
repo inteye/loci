@@ -1,10 +1,11 @@
-import * as vscode from 'vscode';
+import * as cp from 'child_process';
 import * as http from 'http';
 import * as https from 'https';
-import * as cp from 'child_process';
+import * as vscode from 'vscode';
 
 function serverUrl(): string {
-    return vscode.workspace.getConfiguration('sage').get('serverUrl', 'http://localhost:3000');
+    const cfg = vscode.workspace.getConfiguration('loci');
+    return cfg.get('serverUrl', cfg.get('legacyServerUrl', 'http://localhost:3000'));
 }
 
 async function post<T>(path: string, body: object): Promise<T> {
@@ -13,14 +14,23 @@ async function post<T>(path: string, body: object): Promise<T> {
         const data = JSON.stringify(body);
         const lib = url.protocol === 'https:' ? https : http;
         const req = lib.request({
-            hostname: url.hostname, port: url.port || (url.protocol === 'https:' ? 443 : 80),
-            path: url.pathname, method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
+            hostname: url.hostname,
+            port: url.port || (url.protocol === 'https:' ? 443 : 80),
+            path: url.pathname,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(data),
+            },
         }, res => {
             let buf = '';
-            res.on('data', d => buf += d);
+            res.on('data', chunk => buf += chunk);
             res.on('end', () => {
-                try { resolve(JSON.parse(buf)); } catch (e) { reject(e); }
+                try {
+                    resolve(JSON.parse(buf));
+                } catch (error) {
+                    reject(error);
+                }
             });
         });
         req.on('error', reject);
@@ -34,106 +44,110 @@ async function checkServer(): Promise<boolean> {
         const url = new URL(serverUrl() + '/health');
         const lib = url.protocol === 'https:' ? https : http;
         lib.get(url.toString(), res => resolve(res.statusCode === 200))
-           .on('error', () => resolve(false));
+            .on('error', () => resolve(false));
     });
 }
 
-async function ensureServer(context: vscode.ExtensionContext): Promise<boolean> {
+async function ensureServer(): Promise<boolean> {
     if (await checkServer()) return true;
+
     const choice = await vscode.window.showWarningMessage(
-        'Sage server not running. Start it?',
-        'Start sage serve', 'Cancel'
+        'loci server not running. Start it?',
+        'Start loci serve',
+        'Cancel'
     );
-    if (choice !== 'Start sage serve') return false;
+    if (choice !== 'Start loci serve') return false;
+
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '.';
-    cp.spawn('bs', ['serve', '-p', workspaceRoot], { detached: true, stdio: 'ignore' }).unref();
-    // Wait up to 3s for server to start
+    cp.spawn('loci', ['serve', '-p', workspaceRoot], { detached: true, stdio: 'ignore' }).unref();
+
     for (let i = 0; i < 6; i++) {
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(resolve => setTimeout(resolve, 500));
         if (await checkServer()) return true;
     }
-    vscode.window.showErrorMessage('Could not start sage serve. Run it manually: sage serve');
+
+    vscode.window.showErrorMessage('Could not start loci serve. Run it manually: loci serve');
     return false;
 }
 
-// ── commands ──────────────────────────────────────────────────────────────────
-
-async function cmdAsk(context: vscode.ExtensionContext) {
-    if (!await ensureServer(context)) return;
+async function cmdAsk() {
+    if (!await ensureServer()) return;
     const question = await vscode.window.showInputBox({ prompt: 'Ask about the codebase...' });
     if (!question) return;
 
-    const panel = vscode.window.createWebviewPanel('bs.answer', 'Sage', vscode.ViewColumn.Beside, {});
+    const panel = vscode.window.createWebviewPanel('loci.answer', 'loci Ask', vscode.ViewColumn.Beside, {});
     panel.webview.html = loadingHtml('Thinking...');
 
     try {
         const resp = await post<{ answer: string }>('/ask', { question });
         panel.webview.html = markdownHtml(question, resp.answer);
-    } catch (e) {
-        panel.webview.html = errorHtml(String(e));
+    } catch (error) {
+        panel.webview.html = errorHtml(String(error));
     }
 }
 
-async function cmdExplain(context: vscode.ExtensionContext) {
-    if (!await ensureServer(context)) return;
+async function cmdExplain() {
+    if (!await ensureServer()) return;
     const editor = vscode.window.activeTextEditor;
-    if (!editor) { vscode.window.showWarningMessage('Open a file first'); return; }
+    if (!editor) {
+        vscode.window.showWarningMessage('Open a file first');
+        return;
+    }
 
     const filePath = editor.document.uri.fsPath;
-    const selection = editor.selection;
-    const selectedText = editor.document.getText(selection);
-
-    // If text selected, ask about that; otherwise explain the whole file
-    const question = selectedText
-        ? `Explain this code:\n\`\`\`\n${selectedText.slice(0, 2000)}\n\`\`\``
-        : `Explain the file: ${filePath}`;
-
-    const panel = vscode.window.createWebviewPanel('bs.explain', 'Explain', vscode.ViewColumn.Beside, {});
+    const selectedText = editor.document.getText(editor.selection);
+    const panel = vscode.window.createWebviewPanel('loci.explain', 'loci Explain', vscode.ViewColumn.Beside, {});
     panel.webview.html = loadingHtml('Analyzing...');
 
     try {
-        const resp = await post<{ answer: string }>('/ask', { question });
-        panel.webview.html = markdownHtml(question, resp.answer);
-    } catch (e) {
-        panel.webview.html = errorHtml(String(e));
+        const resp = await post<{ answer: string }>('/explain', {
+            target: filePath,
+            selected_text: selectedText || null,
+        });
+        panel.webview.html = markdownHtml(selectedText ? 'Selected Code' : filePath, resp.answer);
+    } catch (error) {
+        panel.webview.html = errorHtml(String(error));
     }
 }
 
-async function cmdDiff(context: vscode.ExtensionContext) {
-    if (!await ensureServer(context)) return;
-    const panel = vscode.window.createWebviewPanel('bs.diff', 'Diff Analysis', vscode.ViewColumn.Beside, {});
-    panel.webview.html = loadingHtml('Analyzing changes...');
+async function cmdDiff() {
+    if (!await ensureServer()) return;
+    const panel = vscode.window.createWebviewPanel('loci.diff', 'loci Diff', vscode.ViewColumn.Beside, {});
+    panel.webview.html = loadingHtml('Analyzing recent changes...');
 
     try {
-        const resp = await post<{ answer: string }>('/ask', {
-            question: 'Analyze the recent git changes in this project. What changed and why?'
-        });
+        const resp = await post<{ answer: string }>('/diff', {});
         panel.webview.html = markdownHtml('Recent Changes', resp.answer);
-    } catch (e) {
-        panel.webview.html = errorHtml(String(e));
+    } catch (error) {
+        panel.webview.html = errorHtml(String(error));
     }
 }
 
 async function cmdIndex() {
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (!workspaceRoot) { vscode.window.showWarningMessage('No workspace open'); return; }
+    if (!workspaceRoot) {
+        vscode.window.showWarningMessage('No workspace open');
+        return;
+    }
 
     vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: 'Sage: Indexing project...' },
+        { location: vscode.ProgressLocation.Notification, title: 'loci: Indexing project...' },
         () => new Promise<void>((resolve, reject) => {
-            cp.exec(`sage index "${workspaceRoot}"`, (err, stdout) => {
-                if (err) { vscode.window.showErrorMessage(`Index failed: ${err.message}`); reject(err); }
-                else { vscode.window.showInformationMessage(`Indexed: ${stdout.trim()}`); resolve(); }
+            cp.exec(`loci index "${workspaceRoot}"`, (error, stdout) => {
+                if (error) {
+                    vscode.window.showErrorMessage(`Index failed: ${error.message}`);
+                    reject(error);
+                    return;
+                }
+                vscode.window.showInformationMessage(`Indexed: ${stdout.trim()}`);
+                resolve();
             });
         })
     );
 }
 
-// ── html helpers ──────────────────────────────────────────────────────────────
-
-function loadingHtml(msg: string): string {
-    return `<!DOCTYPE html><html><body style="font-family:sans-serif;padding:20px">
-    <p>${msg}</p></body></html>`;
+function loadingHtml(message: string): string {
+    return `<!DOCTYPE html><html><body style="font-family:sans-serif;padding:20px"><p>${message}</p></body></html>`;
 }
 
 function markdownHtml(title: string, content: string): string {
@@ -143,19 +157,17 @@ function markdownHtml(title: string, content: string): string {
     </body></html>`;
 }
 
-function errorHtml(msg: string): string {
+function errorHtml(message: string): string {
     return `<!DOCTYPE html><html><body style="font-family:sans-serif;padding:20px;color:red">
-    <p>Error: ${msg}</p><p>Make sure <code>sage serve</code> is running.</p></body></html>`;
+    <p>Error: ${message}</p><p>Make sure <code>loci serve</code> is running.</p></body></html>`;
 }
-
-// ── activate / deactivate ─────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
-        vscode.commands.registerCommand('bs.ask',     () => cmdAsk(context)),
-        vscode.commands.registerCommand('bs.explain', () => cmdExplain(context)),
-        vscode.commands.registerCommand('bs.diff',    () => cmdDiff(context)),
-        vscode.commands.registerCommand('bs.index',   () => cmdIndex()),
+        vscode.commands.registerCommand('loci.ask', () => cmdAsk()),
+        vscode.commands.registerCommand('loci.explain', () => cmdExplain()),
+        vscode.commands.registerCommand('loci.diff', () => cmdDiff()),
+        vscode.commands.registerCommand('loci.index', () => cmdIndex()),
     );
 }
 

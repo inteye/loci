@@ -1,6 +1,6 @@
 {
-  "name": "sage",
-  "displayName": "Sage",
+  "name": "loci",
+  "displayName": "loci",
   "description": "Codebase understanding agent — ask questions, explain code, analyze diffs",
   "version": "0.1.0",
   "engines": { "vscode": "^1.85.0" },
@@ -9,24 +9,29 @@
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
-      { "command": "bs.ask",     "title": "Sage: Ask a question" },
-      { "command": "bs.explain", "title": "Sage: Explain this file" },
-      { "command": "bs.diff",    "title": "Sage: Explain recent changes" },
-      { "command": "bs.index",   "title": "Sage: Index project" }
+      { "command": "loci.ask",     "title": "loci: Ask a question" },
+      { "command": "loci.explain", "title": "loci: Explain this file" },
+      { "command": "loci.diff",    "title": "loci: Explain recent changes" },
+      { "command": "loci.index",   "title": "loci: Index project" }
     ],
     "menus": {
       "editor/context": [
-        { "command": "bs.explain", "group": "sage" },
-        { "command": "bs.ask",     "group": "sage" }
+        { "command": "loci.explain", "group": "loci" },
+        { "command": "loci.ask",     "group": "loci" }
       ]
     },
     "configuration": {
-      "title": "Sage",
+      "title": "loci",
       "properties": {
-        "sage.serverUrl": {
+        "loci.serverUrl": {
           "type": "string",
           "default": "http://localhost:3000",
-          "description": "URL of the sage serve instance"
+          "description": "URL of the loci serve instance"
+        },
+        "loci.legacyServerUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Temporary compatibility override for older extension configurations"
         }
       }
     }
