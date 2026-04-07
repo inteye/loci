@@ -138,7 +138,9 @@ button {
 .project-card input,
 .toolbar-actions input,
 .toolbar-actions select,
-.composer textarea {
+.composer textarea,
+.settings-card input,
+.settings-card select {
   width: 100%;
   border: 1px solid rgba(169, 188, 203, 0.18);
   background: rgba(6, 12, 19, 0.72);
@@ -227,6 +229,14 @@ button {
   background: linear-gradient(180deg, rgba(22, 35, 50, 0.92) 0%, rgba(26, 42, 60, 0.98) 100%);
 }
 
+.settings-banner,
+.settings-card,
+.field-group,
+.settings-card-header,
+.settings-actions {
+  min-width: 0;
+}
+
 .workspace {
   padding: 28px;
 }
@@ -256,6 +266,281 @@ button {
 
 .status-pill.loading {
   color: #f6c66f;
+}
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 20px;
+}
+
+.main-panel,
+.context-panel,
+.chat-layout,
+.chat-history,
+.panel-stack,
+.toolbar,
+.toolbar-copy,
+.toolbar-actions,
+.settings-grid,
+.settings-list,
+.settings-card,
+.markdown-body,
+.message-card,
+.context-card,
+.node-card,
+.evidence-card {
+  min-width: 0;
+}
+
+.main-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.context-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.status-banner {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(169, 188, 203, 0.14);
+  background: rgba(10, 18, 29, 0.78);
+  overflow-wrap: anywhere;
+}
+
+.status-banner.loading {
+  border-color: rgba(246, 198, 111, 0.28);
+}
+
+.status-banner.error {
+  border-color: rgba(235, 113, 113, 0.32);
+}
+
+.status-banner.success {
+  border-color: rgba(117, 196, 147, 0.28);
+}
+
+.chat-layout,
+.panel-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.helper-strip,
+.composer,
+.toolbar,
+.settings-banner,
+.settings-card,
+.empty-state,
+.error-panel {
+  border: 1px solid rgba(190, 210, 226, 0.12);
+  background: rgba(14, 22, 34, 0.78);
+  border-radius: 18px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.18);
+  padding: 16px;
+}
+
+.helper-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.suggestion-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.suggestion-chip,
+.ghost-button {
+  border-radius: 999px;
+  border: 1px solid rgba(169, 188, 203, 0.12);
+  background: rgba(124, 146, 164, 0.14);
+  color: #dfe7ef;
+  padding: 10px 14px;
+}
+
+.chat-history,
+.result-list,
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.message-card {
+  padding: 16px;
+}
+
+.message-card.user {
+  border-color: rgba(246, 165, 75, 0.26);
+}
+
+.message-meta {
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #86a1ba;
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.composer-footer,
+.toolbar,
+.toolbar-actions,
+.settings-card-header,
+.settings-actions,
+.settings-banner {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.toolbar {
+  flex-wrap: wrap;
+}
+
+.toolbar-copy {
+  flex: 1;
+}
+
+.toolbar-actions {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.metric-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.metric-card {
+  padding: 14px;
+}
+
+.metric-card span,
+.node-card span,
+.node-card small,
+.field-group p,
+.settings-banner p,
+.markdown-body,
+.message-card,
+.context-card p,
+.evidence-card,
+.empty-state,
+.error-panel {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.section-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.section-heading h3,
+.markdown-title {
+  margin: 0;
+}
+
+.node-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.node-card,
+.evidence-card {
+  padding: 14px;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.span-2 {
+  grid-column: span 2;
+}
+
+.settings-card-header strong,
+.settings-banner strong,
+.toolbar-copy strong,
+.helper-strip strong,
+.field-group label,
+.project-card label {
+  display: block;
+}
+
+.settings-card-header p,
+.settings-banner p,
+.field-group p {
+  margin: 6px 0 0;
+  color: #8ea0b2;
+  line-height: 1.5;
+}
+
+.markdown-body pre,
+.markdown-body code {
+  overflow-x: auto;
+}
+
+.empty-state,
+.error-panel {
+  color: #c4d2df;
+}
+
+.error-panel {
+  border-color: rgba(235, 113, 113, 0.32);
+}
+
+.context-card ul {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.6;
+  color: #d4dfea;
+}
+
+@media (max-width: 1080px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .span-2 {
+    grid-column: auto;
+  }
 }
 
 .status-pill.error {

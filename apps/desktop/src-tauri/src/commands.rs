@@ -3,7 +3,10 @@ use loci_codebase::{CodebaseIndexer, GitHistory, ParsedFile, SymbolKind};
 use loci_core::types::{MemoryScope, Message, Role};
 use loci_graph::{Edge, EdgeKind, GraphStore, KnowledgeGraph, Node, NodeKind, VectorIndex};
 use loci_knowledge::KnowledgeStore;
-use loci_llm::{config::BsConfig, LlmClient};
+use loci_llm::{
+    config::{BsConfig, ProviderConfig, ProviderProtocol},
+    LlmClient,
+};
 use loci_memory::{remember, MemoryStore};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -45,6 +48,23 @@ pub struct TraceData {
 pub struct DocData {
     pub kind: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderSettingsData {
+    pub name: String,
+    pub protocol: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub api_key_env: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelSettingsData {
+    pub config_path: String,
+    pub default_provider: Option<String>,
+    pub providers: Vec<ProviderSettingsData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -93,8 +113,12 @@ fn default_project_path() -> String {
         .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
         .and_then(|json| {
             let active = json.get("active")?.as_str()?.to_string();
-            json.get("projects")?.as_array()?.iter()
-                .find(|project| project.get("name").and_then(|name| name.as_str()) == Some(active.as_str()))
+            json.get("projects")?
+                .as_array()?
+                .iter()
+                .find(|project| {
+                    project.get("name").and_then(|name| name.as_str()) == Some(active.as_str())
+                })
                 .and_then(|project| project.get("path").and_then(|path| path.as_str()))
                 .map(|path| path.to_string())
         });
@@ -126,7 +150,10 @@ fn memory_db_path(path: &Path) -> String {
 }
 
 fn knowledge_db_path(path: &Path) -> String {
-    bs_dir(path).join("knowledge.db").to_string_lossy().to_string()
+    bs_dir(path)
+        .join("knowledge.db")
+        .to_string_lossy()
+        .to_string()
 }
 
 fn map_node(node: &Node) -> GraphNode {
@@ -159,28 +186,136 @@ fn is_evidence_edge(kind: &EdgeKind) -> bool {
 
 fn require_llm(cfg: &BsConfig, provider: Option<&str>) -> Result<Box<dyn LlmClient>, String> {
     cfg.build_client(provider)
-        .map_err(|_| "No LLM configured. Create .bs/config.toml or set OPENAI_API_KEY.".to_string())
+        .map_err(|_| "No LLM configured. Create .bs/config.toml and configure an OpenAI or Anthropic compatible provider.".to_string())
+}
+
+fn provider_protocol_to_string(protocol: &ProviderProtocol) -> String {
+    match protocol {
+        ProviderProtocol::OpenAi => "openai".to_string(),
+        ProviderProtocol::Anthropic => "anthropic".to_string(),
+    }
+}
+
+fn provider_protocol_from_string(value: &str) -> ProviderProtocol {
+    match value.trim().to_lowercase().as_str() {
+        "anthropic" => ProviderProtocol::Anthropic,
+        _ => ProviderProtocol::OpenAi,
+    }
+}
+
+fn settings_from_config(project_path: &Path, cfg: BsConfig) -> ModelSettingsData {
+    ModelSettingsData {
+        config_path: project_path
+            .join(".bs/config.toml")
+            .to_string_lossy()
+            .to_string(),
+        default_provider: cfg.default_provider,
+        providers: cfg
+            .providers
+            .into_iter()
+            .map(|provider| ProviderSettingsData {
+                name: provider.name,
+                protocol: provider_protocol_to_string(&provider.protocol),
+                base_url: provider.base_url.unwrap_or_default(),
+                api_key: provider.api_key.unwrap_or_default(),
+                api_key_env: provider.api_key_env.unwrap_or_default(),
+                model: provider.model,
+            })
+            .collect(),
+    }
+}
+
+fn config_from_settings(settings: ModelSettingsData) -> Result<BsConfig, String> {
+    let providers = settings
+        .providers
+        .into_iter()
+        .map(|provider| {
+            let name = provider.name.trim().to_string();
+            let model = provider.model.trim().to_string();
+            if name.is_empty() {
+                return Err("Provider name cannot be empty.".to_string());
+            }
+            if model.is_empty() {
+                return Err(format!("Provider '{}' is missing a model.", name));
+            }
+
+            Ok(ProviderConfig {
+                name,
+                protocol: provider_protocol_from_string(&provider.protocol),
+                base_url: (!provider.base_url.trim().is_empty())
+                    .then(|| provider.base_url.trim().to_string()),
+                api_key: (!provider.api_key.trim().is_empty())
+                    .then(|| provider.api_key.trim().to_string()),
+                api_key_env: (!provider.api_key_env.trim().is_empty())
+                    .then(|| provider.api_key_env.trim().to_string()),
+                model,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if providers.is_empty() {
+        return Err("At least one provider is required.".to_string());
+    }
+
+    if let Some(default_provider) = settings.default_provider.as_deref() {
+        if !default_provider.trim().is_empty()
+            && !providers
+                .iter()
+                .any(|provider| provider.name == default_provider)
+        {
+            return Err(format!(
+                "Default provider '{}' does not exist.",
+                default_provider
+            ));
+        }
+    }
+
+    Ok(BsConfig {
+        default_provider: settings.default_provider.and_then(|value| {
+            let trimmed = value.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        }),
+        providers,
+    })
 }
 
 fn build_doc_prompt(graph: &KnowledgeGraph, kind: &str) -> String {
-    let decisions: Vec<&Node> = graph.nodes.iter()
+    let decisions: Vec<&Node> = graph
+        .nodes
+        .iter()
         .filter(|n| n.kind == NodeKind::Decision)
         .take(12)
         .collect();
-    let concepts: Vec<&Node> = graph.nodes.iter()
+    let concepts: Vec<&Node> = graph
+        .nodes
+        .iter()
         .filter(|n| n.kind == NodeKind::Concept)
         .take(12)
         .collect();
-    let files: Vec<&Node> = graph.nodes.iter()
+    let files: Vec<&Node> = graph
+        .nodes
+        .iter()
         .filter(|n| n.kind == NodeKind::File)
         .take(12)
         .collect();
 
     let context = format!(
         "## Decisions\n{}\n\n## Concepts\n{}\n\n## Files\n{}",
-        decisions.iter().map(|n| format!("- {}: {}", n.name, n.description.as_deref().unwrap_or(""))).collect::<Vec<_>>().join("\n"),
-        concepts.iter().map(|n| format!("- {}: {}", n.name, n.description.as_deref().unwrap_or(""))).collect::<Vec<_>>().join("\n"),
-        files.iter().map(|n| format!("- {}", n.name)).collect::<Vec<_>>().join("\n"),
+        decisions
+            .iter()
+            .map(|n| format!("- {}: {}", n.name, n.description.as_deref().unwrap_or("")))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        concepts
+            .iter()
+            .map(|n| format!("- {}: {}", n.name, n.description.as_deref().unwrap_or("")))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        files
+            .iter()
+            .map(|n| format!("- {}", n.name))
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
 
     match kind {
@@ -207,16 +342,25 @@ fn build_doc_prompt(graph: &KnowledgeGraph, kind: &str) -> String {
 
 async fn build_graph_local(project_path: &Path) -> Result<(usize, usize, usize, usize), String> {
     let index = CodebaseIndexer::index(project_path).map_err(|e| e.to_string())?;
-    let store = GraphStore::new(&graph_db_path(project_path)).await.map_err(|e| e.to_string())?;
+    let store = GraphStore::new(&graph_db_path(project_path))
+        .await
+        .map_err(|e| e.to_string())?;
     store.clear().await.map_err(|e| e.to_string())?;
 
     let mut graph = KnowledgeGraph::default();
     let mut commit_nodes: HashMap<String, Uuid> = HashMap::new();
-    let parsed_by_path: HashMap<String, &ParsedFile> = index.parsed_files.iter()
+    let parsed_by_path: HashMap<String, &ParsedFile> = index
+        .parsed_files
+        .iter()
         .map(|pf| (pf.path.clone(), pf))
         .collect();
 
-    for file in index.summary.files.iter().filter(|file| file.language.is_code()) {
+    for file in index
+        .summary
+        .files
+        .iter()
+        .filter(|file| file.language.is_code())
+    {
         let file_path = file.path.to_string_lossy().to_string();
         let parsed = parsed_by_path.get(&file_path).copied();
         let file_node = Node {
@@ -224,12 +368,17 @@ async fn build_graph_local(project_path: &Path) -> Result<(usize, usize, usize, 
             kind: NodeKind::File,
             name: file.relative_path.clone(),
             file_path: Some(file_path.clone()),
-            description: parsed.and_then(|pf| pf.doc_comment.clone()).or_else(|| Some(format!("{} lines", file.line_count))),
+            description: parsed
+                .and_then(|pf| pf.doc_comment.clone())
+                .or_else(|| Some(format!("{} lines", file.line_count))),
             raw_source: None,
             created_at: Utc::now(),
         };
         let file_id = graph.add_node(file_node.clone());
-        store.save_node(&file_node).await.map_err(|e| e.to_string())?;
+        store
+            .save_node(&file_node)
+            .await
+            .map_err(|e| e.to_string())?;
 
         if let Ok(history) = GitHistory::file_history(&project_path.to_path_buf(), &file_path, 3) {
             for commit in history.commits {
@@ -243,7 +392,8 @@ async fn build_graph_local(project_path: &Path) -> Result<(usize, usize, usize, 
                         file_path: Some(file_path.clone()),
                         description: Some(format!("{} — {}", commit.message, commit.author)),
                         raw_source: None,
-                        created_at: chrono::DateTime::from_timestamp(commit.timestamp, 0).unwrap_or_else(Utc::now),
+                        created_at: chrono::DateTime::from_timestamp(commit.timestamp, 0)
+                            .unwrap_or_else(Utc::now),
                     };
                     let id = graph.add_node(node.clone());
                     store.save_node(&node).await.map_err(|e| e.to_string())?;
@@ -282,7 +432,10 @@ async fn build_graph_local(project_path: &Path) -> Result<(usize, usize, usize, 
                     created_at: Utc::now(),
                 };
                 let symbol_id = graph.add_node(symbol_node.clone());
-                store.save_node(&symbol_node).await.map_err(|e| e.to_string())?;
+                store
+                    .save_node(&symbol_node)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 let edge = Edge {
                     id: Uuid::new_v4(),
                     from: file_id,
@@ -295,11 +448,21 @@ async fn build_graph_local(project_path: &Path) -> Result<(usize, usize, usize, 
             }
 
             for (caller, callee) in &parsed_file.calls {
-                let from_id = graph.nodes.iter()
-                    .find(|node| &node.name == caller && node.file_path.as_deref() == Some(file_path.as_str()))
+                let from_id = graph
+                    .nodes
+                    .iter()
+                    .find(|node| {
+                        &node.name == caller
+                            && node.file_path.as_deref() == Some(file_path.as_str())
+                    })
                     .map(|node| node.id);
-                let to_id = graph.nodes.iter()
-                    .find(|node| &node.name == callee && node.file_path.as_deref() == Some(file_path.as_str()))
+                let to_id = graph
+                    .nodes
+                    .iter()
+                    .find(|node| {
+                        &node.name == callee
+                            && node.file_path.as_deref() == Some(file_path.as_str())
+                    })
                     .map(|node| node.id);
                 if let (Some(from), Some(to)) = (from_id, to_id) {
                     if from != to {
@@ -359,15 +522,37 @@ async fn build_graph_context(
             if let Ok(hits) = vector_index.search(vector, 30).await {
                 let trace_query = is_trace_question(question);
                 let mut ranked_ids: Vec<Uuid> = if trace_query {
-                    let mut preferred: Vec<Uuid> = hits.iter()
-                        .filter_map(|(id, _)| graph.nodes.iter()
-                            .find(|node| node.id == *id && matches!(node.kind, NodeKind::Decision | NodeKind::Commit))
-                            .map(|node| node.id))
+                    let mut preferred: Vec<Uuid> = hits
+                        .iter()
+                        .filter_map(|(id, _)| {
+                            graph
+                                .nodes
+                                .iter()
+                                .find(|node| {
+                                    node.id == *id
+                                        && matches!(
+                                            node.kind,
+                                            NodeKind::Decision | NodeKind::Commit
+                                        )
+                                })
+                                .map(|node| node.id)
+                        })
                         .collect();
-                    let mut fallback: Vec<Uuid> = hits.iter()
-                        .filter_map(|(id, _)| graph.nodes.iter()
-                            .find(|node| node.id == *id && !matches!(node.kind, NodeKind::Decision | NodeKind::Commit))
-                            .map(|node| node.id))
+                    let mut fallback: Vec<Uuid> = hits
+                        .iter()
+                        .filter_map(|(id, _)| {
+                            graph
+                                .nodes
+                                .iter()
+                                .find(|node| {
+                                    node.id == *id
+                                        && !matches!(
+                                            node.kind,
+                                            NodeKind::Decision | NodeKind::Commit
+                                        )
+                                })
+                                .map(|node| node.id)
+                        })
                         .collect();
                     preferred.append(&mut fallback);
                     preferred
@@ -384,12 +569,24 @@ async fn build_graph_context(
                 }
                 let mut context = graph.to_context_str_filtered(&ids);
                 if trace_query {
-                    let decisions = graph.nodes.iter()
+                    let decisions = graph
+                        .nodes
+                        .iter()
                         .filter(|node| ids.contains(&node.id) && node.kind == NodeKind::Decision)
-                        .map(|node| format!("- {}: {}", node.name, node.description.as_deref().unwrap_or("")))
+                        .map(|node| {
+                            format!(
+                                "- {}: {}",
+                                node.name,
+                                node.description.as_deref().unwrap_or("")
+                            )
+                        })
                         .collect::<Vec<_>>();
                     if !decisions.is_empty() {
-                        context = format!("## Prior Decisions\n{}\n\n{}", decisions.join("\n"), context);
+                        context = format!(
+                            "## Prior Decisions\n{}\n\n{}",
+                            decisions.join("\n"),
+                            context
+                        );
                     }
                 }
                 return context;
@@ -401,24 +598,35 @@ async fn build_graph_context(
 }
 
 async fn build_memory_context(q_vec: &Option<Vec<f32>>, store: &MemoryStore) -> String {
-    let memories = store.recall(q_vec.as_deref(), Some(MemoryScope::Session), None, 5).await.unwrap_or_default();
+    let memories = store
+        .recall(q_vec.as_deref(), Some(MemoryScope::Session), None, 5)
+        .await
+        .unwrap_or_default();
     if memories.is_empty() {
         return String::new();
     }
     format!(
         "\n## Past context\n{}",
-        memories.iter().map(|memory| format!("- {}", memory.content)).collect::<Vec<_>>().join("\n")
+        memories
+            .iter()
+            .map(|memory| format!("- {}", memory.content))
+            .collect::<Vec<_>>()
+            .join("\n")
     )
 }
 
 async fn build_kb_context(q_vec: &Option<Vec<f32>>, store: &KnowledgeStore) -> String {
-    let items = store.search_external(q_vec.as_deref(), None, 3).await.unwrap_or_default();
+    let items = store
+        .search_external(q_vec.as_deref(), None, 3)
+        .await
+        .unwrap_or_default();
     if items.is_empty() {
         return String::new();
     }
     format!(
         "\n## Knowledge base\n{}",
-        items.iter()
+        items
+            .iter()
             .map(|item| format!("---\n{}", &item.content[..item.content.len().min(800)]))
             .collect::<Vec<_>>()
             .join("\n")
@@ -440,10 +648,16 @@ async fn auto_extract_knowledge(
         &answer[..answer.len().min(800)]
     );
 
-    if let Ok(loci_llm::LlmResponse::Text(text)) = llm.chat(
-        vec![Message { role: Role::User, content: prompt }],
-        None,
-    ).await {
+    if let Ok(loci_llm::LlmResponse::Text(text)) = llm
+        .chat(
+            vec![Message {
+                role: Role::User,
+                content: prompt,
+            }],
+            None,
+        )
+        .await
+    {
         let text = text.trim().to_string();
         if text == "SKIP" || text.is_empty() {
             return;
@@ -495,26 +709,49 @@ async fn persist_answer_artifacts(
 ) {
     let memory_text = format!("Q: {}\nA: {}", question, &answer[..answer.len().min(500)]);
     let memory_vector = llm.embed(&memory_text).await.ok();
-    let _ = remember(memory_store, &memory_text, MemoryScope::Session, None, memory_vector).await;
+    let _ = remember(
+        memory_store,
+        &memory_text,
+        MemoryScope::Session,
+        None,
+        memory_vector,
+    )
+    .await;
     auto_extract_knowledge(question, answer, llm, graph, graph_store, vector_index).await;
 }
 
-async fn ask_local(project_path: &Path, question: &str, provider: Option<&str>) -> Result<String, String> {
+async fn ask_local(
+    project_path: &Path,
+    question: &str,
+    provider: Option<&str>,
+) -> Result<String, String> {
     let cfg = BsConfig::load(project_path).unwrap_or_default();
     let llm = require_llm(&cfg, provider)?;
-    let store = GraphStore::new(&graph_db_path(project_path)).await.map_err(|e| e.to_string())?;
+    let store = GraphStore::new(&graph_db_path(project_path))
+        .await
+        .map_err(|e| e.to_string())?;
     let graph = store.load_graph().await.map_err(|e| e.to_string())?;
     if graph.nodes.is_empty() {
-        return Err(format!("No index found. Run: loci index --path {}", project_path.display()));
+        return Err(format!(
+            "No index found. Run: loci index --path {}",
+            project_path.display()
+        ));
     }
 
-    let memory_store = MemoryStore::new(&memory_db_path(project_path)).await.map_err(|e| e.to_string())?;
-    let knowledge_store = KnowledgeStore::new(&knowledge_db_path(project_path)).await.map_err(|e| e.to_string())?;
-    let vector_index = VectorIndex::new(store.pool.clone()).await.map_err(|e| e.to_string())?;
+    let memory_store = MemoryStore::new(&memory_db_path(project_path))
+        .await
+        .map_err(|e| e.to_string())?;
+    let knowledge_store = KnowledgeStore::new(&knowledge_db_path(project_path))
+        .await
+        .map_err(|e| e.to_string())?;
+    let vector_index = VectorIndex::new(store.pool.clone())
+        .await
+        .map_err(|e| e.to_string())?;
     let has_embeddings = vector_index.count().await.map_err(|e| e.to_string())? > 0;
     let q_vec = llm.embed(question).await.ok();
 
-    let graph_ctx = build_graph_context(question, &q_vec, &graph, &vector_index, has_embeddings).await;
+    let graph_ctx =
+        build_graph_context(question, &q_vec, &graph, &vector_index, has_embeddings).await;
     let memory_ctx = build_memory_context(&q_vec, &memory_store).await;
     let kb_ctx = build_kb_context(&q_vec, &knowledge_store).await;
     let system = format!(
@@ -522,24 +759,46 @@ async fn ask_local(project_path: &Path, question: &str, provider: Option<&str>) 
         graph_ctx, memory_ctx, kb_ctx
     );
 
-    let response = llm.chat(
-        vec![
-            Message { role: Role::System, content: system },
-            Message { role: Role::User, content: question.to_string() },
-        ],
-        None,
-    ).await.map_err(|e| e.to_string())?;
+    let response = llm
+        .chat(
+            vec![
+                Message {
+                    role: Role::System,
+                    content: system,
+                },
+                Message {
+                    role: Role::User,
+                    content: question.to_string(),
+                },
+            ],
+            None,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
     let answer = match response {
         loci_llm::LlmResponse::Text(text) => text,
         _ => String::new(),
     };
 
-    persist_answer_artifacts(question, &answer, &*llm, &graph, &store, &vector_index, &memory_store).await;
+    persist_answer_artifacts(
+        question,
+        &answer,
+        &*llm,
+        &graph,
+        &store,
+        &vector_index,
+        &memory_store,
+    )
+    .await;
     Ok(answer)
 }
 
-async fn score_eval_answer(llm: &dyn LlmClient, sample: &EvalSample, answer: &str) -> Result<EvalScore, String> {
+async fn score_eval_answer(
+    llm: &dyn LlmClient,
+    sample: &EvalSample,
+    answer: &str,
+) -> Result<EvalScore, String> {
     let prompt = format!(
         "Score this codebase-understanding answer on a 0-5 scale.\n\
          Judge accuracy, specificity, use of design decisions/concepts, and usefulness to a developer.\n\
@@ -550,12 +809,22 @@ async fn score_eval_answer(llm: &dyn LlmClient, sample: &EvalSample, answer: &st
         &answer[..answer.len().min(4000)]
     );
 
-    let response = llm.chat(vec![Message { role: Role::User, content: prompt }], None).await.map_err(|e| e.to_string())?;
+    let response = llm
+        .chat(
+            vec![Message {
+                role: Role::User,
+                content: prompt,
+            }],
+            None,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     match response {
-        loci_llm::LlmResponse::Text(text) => Ok(serde_json::from_str::<EvalScore>(&text).unwrap_or_else(|_| EvalScore {
-            score: 0,
-            rationale: text,
-        })),
+        loci_llm::LlmResponse::Text(text) => Ok(serde_json::from_str::<EvalScore>(&text)
+            .unwrap_or_else(|_| EvalScore {
+                score: 0,
+                rationale: text,
+            })),
         _ => Ok(EvalScore {
             score: 0,
             rationale: "Scorer returned non-text output.".to_string(),
@@ -598,10 +867,12 @@ async fn eval_local(project_path: &Path, provider: Option<&str>) -> Result<EvalD
 
     for sample in samples {
         let answer = ask_local(project_path, &sample.prompt, provider).await?;
-        let score = score_eval_answer(&*llm, &sample, &answer).await.unwrap_or_else(|_| EvalScore {
-            score: 0,
-            rationale: "Scoring failed.".to_string(),
-        });
+        let score = score_eval_answer(&*llm, &sample, &answer)
+            .await
+            .unwrap_or_else(|_| EvalScore {
+                score: 0,
+                rationale: "Scoring failed.".to_string(),
+            });
         results.push(EvalResult {
             category: sample.category,
             prompt: sample.prompt,
@@ -613,7 +884,11 @@ async fn eval_local(project_path: &Path, provider: Option<&str>) -> Result<EvalD
     let average_score = if results.is_empty() {
         0.0
     } else {
-        results.iter().map(|result| result.score.score as f32).sum::<f32>() / results.len() as f32
+        results
+            .iter()
+            .map(|result| result.score.score as f32)
+            .sum::<f32>()
+            / results.len() as f32
     };
 
     Ok(EvalData {
@@ -632,10 +907,33 @@ pub async fn get_default_project_path() -> Result<String, String> {
 }
 
 #[tauri::command]
+pub async fn get_model_settings(project_path: String) -> Result<ModelSettingsData, String> {
+    let project_path = resolve_project_path(&project_path);
+    let cfg = BsConfig::load(&project_path).unwrap_or_default();
+    Ok(settings_from_config(&project_path, cfg))
+}
+
+#[tauri::command]
+pub async fn save_model_settings(
+    project_path: String,
+    settings: ModelSettingsData,
+) -> Result<String, String> {
+    let project_path = resolve_project_path(&project_path);
+    let config = config_from_settings(settings)?;
+    let path = config
+        .save_project(&project_path)
+        .map_err(|e| e.to_string())?;
+    Ok(format!("模型设置已保存到 {}", path.display()))
+}
+
+#[tauri::command]
 pub async fn index_project(project_path: String) -> Result<String, String> {
     let project_path = resolve_project_path(&project_path);
     let (files, lines, nodes, edges) = build_graph_local(&project_path).await?;
-    Ok(format!("{} files, {} lines, {} nodes, {} edges", files, lines, nodes, edges))
+    Ok(format!(
+        "{} files, {} lines, {} nodes, {} edges",
+        files, lines, nodes, edges
+    ))
 }
 
 #[tauri::command]
@@ -647,7 +945,9 @@ pub async fn ask(project_path: String, question: String) -> Result<String, Strin
 #[tauri::command]
 pub async fn get_graph(project_path: String) -> Result<GraphData, String> {
     let project_path = resolve_project_path(&project_path);
-    let store = GraphStore::new(&graph_db_path(&project_path)).await.map_err(|e| e.to_string())?;
+    let store = GraphStore::new(&graph_db_path(&project_path))
+        .await
+        .map_err(|e| e.to_string())?;
     let graph = store.load_graph().await.map_err(|e| e.to_string())?;
 
     Ok(GraphData {
@@ -659,17 +959,25 @@ pub async fn get_graph(project_path: String) -> Result<GraphData, String> {
 #[tauri::command]
 pub async fn get_trace(project_path: String, target: String) -> Result<TraceData, String> {
     let project_path = resolve_project_path(&project_path);
-    let store = GraphStore::new(&graph_db_path(&project_path)).await.map_err(|e| e.to_string())?;
+    let store = GraphStore::new(&graph_db_path(&project_path))
+        .await
+        .map_err(|e| e.to_string())?;
     let graph = store.load_graph().await.map_err(|e| e.to_string())?;
     let query = target.trim().to_lowercase();
 
-    let anchor_ids: HashSet<Uuid> = graph.nodes.iter()
+    let anchor_ids: HashSet<Uuid> = graph
+        .nodes
+        .iter()
         .filter(|node| {
             if query.is_empty() {
                 false
             } else {
                 node.name.to_lowercase().contains(&query)
-                    || node.file_path.as_ref().map(|path| path.to_lowercase().contains(&query)).unwrap_or(false)
+                    || node
+                        .file_path
+                        .as_ref()
+                        .map(|path| path.to_lowercase().contains(&query))
+                        .unwrap_or(false)
             }
         })
         .map(|node| node.id)
@@ -681,7 +989,13 @@ pub async fn get_trace(project_path: String, target: String) -> Result<TraceData
     let mut related_ids = HashSet::new();
 
     if anchor_ids.is_empty() {
-        for node in graph.nodes.iter().filter(|node| node.kind == NodeKind::Decision).rev().take(8) {
+        for node in graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Decision)
+            .rev()
+            .take(8)
+        {
             decision_ids.insert(node.id);
         }
     } else {
@@ -706,7 +1020,9 @@ pub async fn get_trace(project_path: String, target: String) -> Result<TraceData
     }
 
     for edge in &graph.edges {
-        if is_evidence_edge(&edge.kind) && (decision_ids.contains(&edge.from) || decision_ids.contains(&edge.to)) {
+        if is_evidence_edge(&edge.kind)
+            && (decision_ids.contains(&edge.from) || decision_ids.contains(&edge.to))
+        {
             evidence.push(map_edge(edge));
             if !decision_ids.contains(&edge.from) {
                 related_ids.insert(edge.from);
@@ -718,7 +1034,9 @@ pub async fn get_trace(project_path: String, target: String) -> Result<TraceData
     }
 
     for edge in &graph.edges {
-        if edge.kind == EdgeKind::ChangedIn && (decision_ids.contains(&edge.from) || decision_ids.contains(&edge.to)) {
+        if edge.kind == EdgeKind::ChangedIn
+            && (decision_ids.contains(&edge.from) || decision_ids.contains(&edge.to))
+        {
             if !decision_ids.contains(&edge.from) {
                 commit_ids.insert(edge.from);
             }
@@ -729,30 +1047,62 @@ pub async fn get_trace(project_path: String, target: String) -> Result<TraceData
     }
 
     Ok(TraceData {
-        anchors: graph.nodes.iter().filter(|node| anchor_ids.contains(&node.id)).map(map_node).collect(),
-        decisions: graph.nodes.iter().filter(|node| decision_ids.contains(&node.id)).map(map_node).collect(),
-        commits: graph.nodes.iter()
+        anchors: graph
+            .nodes
+            .iter()
+            .filter(|node| anchor_ids.contains(&node.id))
+            .map(map_node)
+            .collect(),
+        decisions: graph
+            .nodes
+            .iter()
+            .filter(|node| decision_ids.contains(&node.id))
+            .map(map_node)
+            .collect(),
+        commits: graph
+            .nodes
+            .iter()
             .filter(|node| commit_ids.contains(&node.id) && node.kind == NodeKind::Commit)
             .map(map_node)
             .collect(),
         evidence,
-        related: graph.nodes.iter().filter(|node| related_ids.contains(&node.id)).map(map_node).collect(),
+        related: graph
+            .nodes
+            .iter()
+            .filter(|node| related_ids.contains(&node.id))
+            .map(map_node)
+            .collect(),
     })
 }
 
 #[tauri::command]
-pub async fn get_doc(project_path: String, kind: String, provider: Option<String>) -> Result<DocData, String> {
+pub async fn get_doc(
+    project_path: String,
+    kind: String,
+    provider: Option<String>,
+) -> Result<DocData, String> {
     let project_path = resolve_project_path(&project_path);
     let cfg = BsConfig::load(&project_path).unwrap_or_default();
     let llm = require_llm(&cfg, provider.as_deref())?;
-    let store = GraphStore::new(&graph_db_path(&project_path)).await.map_err(|e| e.to_string())?;
+    let store = GraphStore::new(&graph_db_path(&project_path))
+        .await
+        .map_err(|e| e.to_string())?;
     let graph = store.load_graph().await.map_err(|e| e.to_string())?;
     if graph.nodes.is_empty() {
         return Err("No index. Run `loci index` first.".to_string());
     }
 
     let prompt = build_doc_prompt(&graph, &kind);
-    let response = llm.chat(vec![Message { role: Role::User, content: prompt }], None).await.map_err(|e| e.to_string())?;
+    let response = llm
+        .chat(
+            vec![Message {
+                role: Role::User,
+                content: prompt,
+            }],
+            None,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
     let content = match response {
         loci_llm::LlmResponse::Text(text) => text,
         _ => String::new(),
@@ -769,7 +1119,12 @@ pub async fn get_eval(project_path: String, provider: Option<String>) -> Result<
 #[tauri::command]
 pub async fn get_memories(project_path: String) -> Result<Vec<String>, String> {
     let project_path = resolve_project_path(&project_path);
-    let store = MemoryStore::new(&memory_db_path(&project_path)).await.map_err(|e| e.to_string())?;
-    let memories = store.recall(None, None, None, 20).await.map_err(|e| e.to_string())?;
+    let store = MemoryStore::new(&memory_db_path(&project_path))
+        .await
+        .map_err(|e| e.to_string())?;
+    let memories = store
+        .recall(None, None, None, 20)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(memories.into_iter().map(|memory| memory.content).collect())
 }

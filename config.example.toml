@@ -3,15 +3,17 @@
 
 default_provider = "openai"
 
-# OpenAI
+# OpenAI 协议
 [[providers]]
 name = "openai"
+protocol = "openai"
 model = "gpt-4o"
 api_key_env = "OPENAI_API_KEY"
 
-# Ollama（本地，无需 API key）
+# Ollama（本地，无需 API key，OpenAI 兼容协议）
 [[providers]]
 name = "ollama"
+protocol = "openai"
 base_url = "http://localhost:11434/v1"
 model = "qwen2.5-coder:7b"
 api_key = "ollama"
@@ -19,6 +21,7 @@ api_key = "ollama"
 # DeepSeek
 [[providers]]
 name = "deepseek"
+protocol = "openai"
 base_url = "https://api.deepseek.com/v1"
 model = "deepseek-coder"
 api_key_env = "DEEPSEEK_API_KEY"
@@ -26,13 +29,15 @@ api_key_env = "DEEPSEEK_API_KEY"
 # Groq（快速推理）
 [[providers]]
 name = "groq"
+protocol = "openai"
 base_url = "https://api.groq.com/openai/v1"
 model = "llama-3.3-70b-versatile"
 api_key_env = "GROQ_API_KEY"
 
-# Claude via OpenRouter
+# Claude via OpenRouter（OpenAI 兼容协议）
 [[providers]]
 name = "claude"
+protocol = "openai"
 base_url = "https://openrouter.ai/api/v1"
 model = "anthropic/claude-3.5-sonnet"
 api_key_env = "OPENROUTER_API_KEY"
@@ -40,6 +45,15 @@ api_key_env = "OPENROUTER_API_KEY"
 # LM Studio（本地）
 [[providers]]
 name = "lmstudio"
+protocol = "openai"
 base_url = "http://localhost:1234/v1"
 model = "local-model"
 api_key = "lm-studio"
+
+# Anthropic 原生协议
+[[providers]]
+name = "claude-native"
+protocol = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+model = "claude-3-7-sonnet-latest"
+api_key_env = "ANTHROPIC_API_KEY"

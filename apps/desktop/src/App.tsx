@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-type Panel = 'chat' | 'trace' | 'docs' | 'eval' | 'graph' | 'memory'
-type Operation = 'project' | 'index' | 'ask' | 'trace' | 'docs' | 'eval' | 'graph' | 'memory'
+type Panel = 'chat' | 'settings' | 'trace' | 'docs' | 'eval' | 'graph' | 'memory'
+type Operation = 'project' | 'index' | 'ask' | 'settings' | 'trace' | 'docs' | 'eval' | 'graph' | 'memory'
 type AsyncState = 'idle' | 'loading' | 'success' | 'error'
+type ProviderProtocol = 'openai' | 'anthropic'
 
 interface GraphNode {
   id: string
@@ -58,6 +59,21 @@ interface EvalData {
   drift_check: string[]
 }
 
+interface ProviderSettingsData {
+  name: string
+  protocol: ProviderProtocol
+  base_url: string
+  api_key: string
+  api_key_env: string
+  model: string
+}
+
+interface ModelSettingsData {
+  config_path: string
+  default_provider?: string | null
+  providers: ProviderSettingsData[]
+}
+
 interface StatusEntry {
   state: AsyncState
   message: string
@@ -75,13 +91,17 @@ const panelHelp: Record<Panel, { title: string; description: string }> = {
     title: '代码库问答',
     description: '索引完成后，在主聊天区直接提问架构、职责、设计原因和上手路径。',
   },
+  settings: {
+    title: '模型设置',
+    description: '可视化管理默认模型、API 协议、Base URL、模型名和密钥来源，保存到项目级 .bs/config.toml。',
+  },
   trace: {
     title: '追溯分析',
     description: '按文件路径或符号查看决策节点、提交记录和证据边，定位“为什么这样设计”。',
   },
   docs: {
     title: '文档生成',
-    description: '根据当前图谱、概念和决策生成 onboarding、模块说明或交接文档。',
+    description: '根据当前图谱、概念和决策生成入门文档、模块说明或交接文档。',
   },
   eval: {
     title: '质量评测',
@@ -101,6 +121,7 @@ const statusDefaults: Record<Operation, StatusEntry> = {
   project: { state: 'idle', message: '先选择项目目录，再执行索引和问答。' },
   index: { state: 'idle', message: '开始提问前，先为当前项目建立索引。' },
   ask: { state: 'idle', message: '直接输入关于当前代码库的问题。' },
+  settings: { state: 'idle', message: '先配置可用模型，再执行问答、文档或评测。' },
   trace: { state: 'idle', message: '输入文件路径或符号名称查看 Trace 证据。' },
   docs: { state: 'idle', message: '生成当前项目的内置文档视图。' },
   eval: { state: 'idle', message: '运行评测问题，检查当前索引质量。' },
@@ -113,6 +134,30 @@ const suggestedQuestions = [
   '为什么这里会采用当前的设计？',
   '如果我是新同事，应该先看哪几个文件？',
 ]
+
+const protocolOptions: Array<{ value: ProviderProtocol; label: string; helper: string }> = [
+  {
+    value: 'openai',
+    label: 'OpenAI 协议',
+    helper: '适用于 OpenAI 兼容接口，例如 OpenAI、Ollama、OpenRouter、Groq、DeepSeek、LM Studio。',
+  },
+  {
+    value: 'anthropic',
+    label: 'Anthropic 协议',
+    helper: '适用于 Anthropic Messages API 或兼容该协议的自定义服务。',
+  },
+]
+
+function emptyProvider(index: number): ProviderSettingsData {
+  return {
+    name: `provider-${index + 1}`,
+    protocol: 'openai',
+    base_url: '',
+    api_key: '',
+    api_key_env: '',
+    model: '',
+  }
+}
 
 function makeMessage(role: ChatMessage['role'], content: string, title?: string): ChatMessage {
   return {
@@ -130,7 +175,7 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     makeMessage(
       'system',
-      '先选择项目并完成索引，然后在这里提问架构、追溯原因、设计决策或新同事上手问题。',
+      '先选择项目并完成索引，再到“模型设置”中配置默认模型，然后在这里提问架构、追溯原因、设计决策或新同事上手问题。',
       '欢迎使用',
     ),
   ])
@@ -141,12 +186,15 @@ export default function App() {
   const [doc, setDoc] = useState<DocData | null>(null)
   const [evalData, setEvalData] = useState<EvalData | null>(null)
   const [memories, setMemories] = useState<string[]>([])
+  const [settings, setSettings] = useState<ModelSettingsData | null>(null)
   const [statuses, setStatuses] = useState<Record<Operation, StatusEntry>>(statusDefaults)
 
   const activeStatus = useMemo(() => {
-    const order: Operation[] = ['project', 'index', 'ask', 'trace', 'docs', 'eval', 'graph', 'memory']
+    const order: Operation[] = ['project', 'index', 'settings', 'ask', 'trace', 'docs', 'eval', 'graph', 'memory']
     return order.find((key) => statuses[key].state === 'loading')
   }, [statuses])
+
+  const defaultProviderName = settings?.default_provider ?? settings?.providers[0]?.name ?? '未设置'
 
   useEffect(() => {
     invoke<string>('get_default_project_path')
@@ -166,6 +214,9 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (panel === 'settings' && !settings && statuses.settings.state === 'idle') {
+      void loadSettings()
+    }
     if (panel === 'trace' && !trace && statuses.trace.state === 'idle') {
       void loadTrace(traceTarget)
     }
@@ -190,6 +241,15 @@ export default function App() {
     }))
   }
 
+  function resetProjectViews() {
+    setGraph(null)
+    setTrace(null)
+    setDoc(null)
+    setEvalData(null)
+    setMemories([])
+    setSettings(null)
+  }
+
   async function handlePickProjectPath() {
     updateStatus('project', 'loading', '正在打开项目目录选择器...')
     try {
@@ -203,14 +263,10 @@ export default function App() {
         return
       }
       setProjectPath(selected)
-      setGraph(null)
-      setTrace(null)
-      setDoc(null)
-      setEvalData(null)
-      setMemories([])
+      resetProjectViews()
       setMessages((prev) => [
         prev[0],
-        makeMessage('system', `项目路径已更新为 \`${selected}\`。\n\n如果这是一个新项目，请先重新执行索引。`, '项目已切换'),
+        makeMessage('system', `项目路径已更新为 \`${selected}\`。\n\n如果这是一个新项目，请先重新执行索引，并确认模型设置。`, '项目已切换'),
       ])
       updateStatus('project', 'success', `已选择项目：${selected}`)
     } catch (error) {
@@ -222,11 +278,7 @@ export default function App() {
     updateStatus('index', 'loading', '正在索引项目并重建本地图谱...')
     try {
       const result = await invoke<string>('index_project', { projectPath })
-      setGraph(null)
-      setTrace(null)
-      setDoc(null)
-      setEvalData(null)
-      setMemories([])
+      resetProjectViews()
       setMessages((prev) => [
         ...prev,
         makeMessage('system', `索引完成。\n\n${result}`, '索引完成'),
@@ -247,17 +299,111 @@ export default function App() {
     const userMessage = makeMessage('user', trimmed)
     setMessages((prev) => [...prev, userMessage])
     setQuestion('')
-    updateStatus('ask', 'loading', '正在结合当前索引和上下文生成回答...')
+    updateStatus('ask', 'loading', '正在结合当前索引和模型设置生成回答...')
 
     try {
       const answer = await invoke<string>('ask', { projectPath, question: trimmed })
       setMessages((prev) => [...prev, makeMessage('assistant', answer, '回答')])
-      updateStatus('ask', 'success', '已基于本地图谱和记忆上下文生成回答。')
+      updateStatus('ask', 'success', `已使用默认模型「${defaultProviderName}」生成回答。`)
     } catch (error) {
       const message = `问答失败：${String(error)}`
       setMessages((prev) => [...prev, makeMessage('system', message, '错误')])
       updateStatus('ask', 'error', message)
     }
+  }
+
+  async function loadSettings() {
+    updateStatus('settings', 'loading', '正在读取当前项目的模型设置...')
+    try {
+      const data = await invoke<ModelSettingsData>('get_model_settings', { projectPath })
+      setSettings({
+        ...data,
+        providers: data.providers.length > 0 ? data.providers : [emptyProvider(0)],
+      })
+      updateStatus('settings', 'success', `已加载 ${data.providers.length} 个模型配置。`)
+    } catch (error) {
+      setSettings(null)
+      updateStatus('settings', 'error', `设置加载失败：${String(error)}`)
+    }
+  }
+
+  async function saveSettings() {
+    if (!settings) {
+      updateStatus('settings', 'error', '当前没有可保存的设置。')
+      return
+    }
+
+    updateStatus('settings', 'loading', '正在保存模型设置...')
+    try {
+      const message = await invoke<string>('save_model_settings', {
+        projectPath,
+        settings,
+      })
+      updateStatus('settings', 'success', message)
+      setMessages((prev) => [
+        ...prev,
+        makeMessage('system', `${message}\n\n默认模型：${settings.default_provider ?? settings.providers[0]?.name ?? '未设置'}`, '设置已保存'),
+      ])
+    } catch (error) {
+      updateStatus('settings', 'error', `设置保存失败：${String(error)}`)
+    }
+  }
+
+  function updateProvider(index: number, field: keyof ProviderSettingsData, value: string) {
+    setSettings((prev) => {
+      if (!prev) return prev
+      const providers = [...prev.providers]
+      const current = providers[index]
+      if (!current) return prev
+      providers[index] = {
+        ...current,
+        [field]: field === 'protocol' ? value as ProviderProtocol : value,
+      }
+
+      const defaultProvider = prev.default_provider && providers.some((provider) => provider.name === prev.default_provider)
+        ? prev.default_provider
+        : providers[0]?.name ?? null
+
+      return {
+        ...prev,
+        providers,
+        default_provider: defaultProvider,
+      }
+    })
+  }
+
+  function addProvider() {
+    setSettings((prev) => {
+      const next = prev ?? {
+        config_path: `${projectPath}/.bs/config.toml`,
+        default_provider: null,
+        providers: [],
+      }
+      const providers = [...next.providers, emptyProvider(next.providers.length)]
+      return {
+        ...next,
+        providers,
+        default_provider: next.default_provider ?? providers[0]?.name ?? null,
+      }
+    })
+    updateStatus('settings', 'idle', '已新增一个模型配置项，填写后记得保存。')
+  }
+
+  function removeProvider(index: number) {
+    setSettings((prev) => {
+      if (!prev) return prev
+      const provider = prev.providers[index]
+      const providers = prev.providers.filter((_, current) => current !== index)
+      return {
+        ...prev,
+        providers: providers.length > 0 ? providers : [emptyProvider(0)],
+        default_provider:
+          prev.default_provider === provider?.name
+            ? providers[0]?.name ?? null
+            : prev.default_provider,
+      }
+    })
+    updateStatus('settings', 'idle', '已移除一个模型配置项。')
   }
 
   async function loadTrace(target = traceTarget) {
@@ -354,7 +500,7 @@ export default function App() {
                 选择项目
               </button>
             </div>
-            <p>选择要建立索引和进行问答的仓库目录。</p>
+            <p>先选择仓库目录，再建立索引、配置模型和执行问答。</p>
             <button type="button" className="primary-button wide-button" onClick={handleIndex} disabled={disabled}>
               {statuses.index.state === 'loading' ? '索引中...' : '建立索引'}
             </button>
@@ -398,7 +544,7 @@ export default function App() {
                 <div className="helper-strip">
                   <div>
                     <strong>如何使用</strong>
-                    <p>先对当前项目建立索引，然后直接提问架构、职责、设计原因或新人上手路径。</p>
+                    <p>先建立索引，再在“模型设置”里确认默认模型可用，然后直接提问架构、职责、设计原因或新人上手路径。</p>
                   </div>
                   <div className="suggestion-list">
                     {suggestedQuestions.map((item) => (
@@ -436,12 +582,154 @@ export default function App() {
                     rows={4}
                   />
                   <div className="composer-footer">
-                    <p>按 Enter 发送，按 Shift+Enter 换行。</p>
+                    <p>当前默认模型：{defaultProviderName}。按 Enter 发送，按 Shift+Enter 换行。</p>
                     <button type="button" className="primary-button" onClick={handleAsk} disabled={disabled}>
                       {statuses.ask.state === 'loading' ? '生成中...' : '发送'}
                     </button>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {panel === 'settings' && (
+              <div className="panel-stack">
+                <div className="toolbar">
+                  <div className="toolbar-copy">
+                    <strong>模型设置管理</strong>
+                    <p>这里编辑的是当前项目的 `.bs/config.toml`。支持 OpenAI 协议和 Anthropic 协议的自定义 AI 服务。</p>
+                  </div>
+                  <div className="toolbar-actions">
+                    <button type="button" className="secondary-button" onClick={() => loadSettings()} disabled={disabled}>
+                      {statuses.settings.state === 'loading' ? '加载中...' : '重新读取'}
+                    </button>
+                    <button type="button" className="primary-button" onClick={() => saveSettings()} disabled={disabled}>
+                      {statuses.settings.state === 'loading' ? '保存中...' : '保存设置'}
+                    </button>
+                  </div>
+                </div>
+
+                <PanelState status={statuses.settings} empty={!settings}>
+                  {settings ? (
+                    <div className="panel-stack">
+                      <div className="settings-banner">
+                        <div>
+                          <strong>配置文件</strong>
+                          <p>{settings.config_path}</p>
+                        </div>
+                        <div>
+                          <strong>默认模型</strong>
+                          <p>{settings.default_provider ?? '未设置'}</p>
+                        </div>
+                      </div>
+
+                      <div className="settings-card">
+                        <label htmlFor="default-provider">默认 provider</label>
+                        <select
+                          id="default-provider"
+                          value={settings.default_provider ?? ''}
+                          onChange={(event) => setSettings((prev) => prev ? ({
+                            ...prev,
+                            default_provider: event.target.value || null,
+                          }) : prev)}
+                        >
+                          {settings.providers.map((provider) => (
+                            <option key={provider.name} value={provider.name}>
+                              {provider.name}
+                            </option>
+                          ))}
+                        </select>
+                        <p>桌面端问答、文档生成和评测都会优先使用这里选择的默认模型。</p>
+                      </div>
+
+                      <div className="settings-actions">
+                        <button type="button" className="secondary-button" onClick={addProvider} disabled={disabled}>
+                          新增模型配置
+                        </button>
+                      </div>
+
+                      <div className="settings-list">
+                        {settings.providers.map((provider, index) => (
+                          <div key={`${provider.name}-${index}`} className="settings-card">
+                            <div className="settings-card-header">
+                              <div>
+                                <strong>{provider.name || `模型配置 ${index + 1}`}</strong>
+                                <p>为当前项目配置一个可直接调用的模型服务。</p>
+                              </div>
+                              <button type="button" className="ghost-button" onClick={() => removeProvider(index)} disabled={disabled}>
+                                删除
+                              </button>
+                            </div>
+
+                            <div className="settings-grid">
+                              <div className="field-group">
+                                <label>显示名称</label>
+                                <input
+                                  value={provider.name}
+                                  onChange={(event) => updateProvider(index, 'name', event.target.value)}
+                                  placeholder="例如 openai / claude / local-dev"
+                                />
+                              </div>
+
+                              <div className="field-group">
+                                <label>协议类型</label>
+                                <select
+                                  value={provider.protocol}
+                                  onChange={(event) => updateProvider(index, 'protocol', event.target.value)}
+                                >
+                                  {protocolOptions.map((option) => (
+                                    <option key={option.value} value={option.value}>
+                                      {option.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <p>{protocolOptions.find((option) => option.value === provider.protocol)?.helper}</p>
+                              </div>
+
+                              <div className="field-group span-2">
+                                <label>Base URL</label>
+                                <input
+                                  value={provider.base_url}
+                                  onChange={(event) => updateProvider(index, 'base_url', event.target.value)}
+                                  placeholder={provider.protocol === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1'}
+                                />
+                                <p>留空会使用协议默认地址。Anthropic 协议会自动补 `/messages`。</p>
+                              </div>
+
+                              <div className="field-group span-2">
+                                <label>模型名</label>
+                                <input
+                                  value={provider.model}
+                                  onChange={(event) => updateProvider(index, 'model', event.target.value)}
+                                  placeholder={provider.protocol === 'anthropic' ? 'claude-3-7-sonnet-latest' : 'gpt-4o-mini'}
+                                />
+                              </div>
+
+                              <div className="field-group">
+                                <label>API Key</label>
+                                <input
+                                  type="password"
+                                  value={provider.api_key}
+                                  onChange={(event) => updateProvider(index, 'api_key', event.target.value)}
+                                  placeholder="可直接填写密钥"
+                                />
+                              </div>
+
+                              <div className="field-group">
+                                <label>API Key 环境变量</label>
+                                <input
+                                  value={provider.api_key_env}
+                                  onChange={(event) => updateProvider(index, 'api_key_env', event.target.value)}
+                                  placeholder={provider.protocol === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'}
+                                />
+                                <p>建议优先使用环境变量。直接写入 API Key 只适合本机临时调试。</p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </PanelState>
               </div>
             )}
 
@@ -652,6 +940,11 @@ export default function App() {
             </div>
 
             <div className="context-card">
+              <div className="context-label">当前默认模型</div>
+              <p>{defaultProviderName}</p>
+            </div>
+
+            <div className="context-card">
               <div className="context-label">当前面板</div>
               <p>{panelHelp[panel].description}</p>
             </div>
@@ -659,8 +952,9 @@ export default function App() {
             <div className="context-card">
               <div className="context-label">操作提示</div>
               <ul>
-                <li>切换项目路径后，建议先重新建立索引。</li>
-                <li>先在聊天区问大问题，再切到追溯或文档面板做进一步确认。</li>
+                <li>切换项目路径后，建议先重新建立索引，再检查模型设置。</li>
+                <li>优先在设置面板里配置默认模型和协议，再执行问答、文档或评测。</li>
+                <li>OpenAI 协议适合兼容 `/v1` 接口的服务，Anthropic 协议适合 Messages API。</li>
                 <li>桌面端操作全部走本地能力，不依赖外部 HTTP 服务。</li>
               </ul>
             </div>
@@ -706,7 +1000,7 @@ function PanelState({
 }: {
   status: StatusEntry
   empty: boolean
-  children: React.ReactNode
+  children: ReactNode
 }) {
   if (status.state === 'loading') {
     return <div className="empty-state">加载中...</div>
@@ -765,7 +1059,7 @@ function Section({
 }: {
   title: string
   empty: string
-  children: React.ReactNode
+  children: ReactNode
 }) {
   const hasItems = Array.isArray(children) ? children.length > 0 : Boolean(children)
   return (
