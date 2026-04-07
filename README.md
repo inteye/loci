@@ -1,65 +1,58 @@
 # loci
 
-本地优先的技术人员 AI Agent 系统。
+`loci` 是一个本地优先的代码库理解系统，当前覆盖三类使用方式：
 
-## 架构
+- 命令行：索引代码库、追问架构、解释文件和变更、生成文档、跑评测
+- 桌面端：查看问答、Trace、Docs、Eval、Graph、Memory
+- VS Code 插件：在编辑器里直接触发问答、文件解释和变更解释
 
-```
+它的核心不是通用 Agent 外壳，而是围绕代码库理解构建的主链路：`index -> graph -> trace -> decision/concept -> ask/doc/eval`。
+
+## 当前能力
+
+- 代码索引与语义检索
+- Git 历史、blame、trace 决策沉淀
+- `Decision` / `Concept` / `Commit` 图谱
+- 文档生成：`onboarding`、`module`、`handoff`
+- 评测入口：固定样本、评分、结果落盘
+- 本地 HTTP API、桌面端、VS Code 插件
+
+## 项目结构
+
+```text
 crates/
-  core/        # 共享类型：Memory, Knowledge, Task, Message 等
-  llm/         # LLM 客户端抽象（OpenAI 兼容协议，支持 Ollama/Claude 等）
-  memory/      # 记忆系统（短期/项目/全局，SQLite + 向量）
-  knowledge/   # 知识库（文件/URL/对话自动提取，向量检索）
-  agent/       # Planner + Executor（动态任务分解 + 工具调用循环）
-  tools/       # 工具注册表（shell, file, http, knowledge_search, memory_recall）
-  storage/     # SQLite 持久化层
-  cli/         # CLI 入口
+  cli/         loci CLI
+  agent/       trace 与 agent 能力
+  codebase/    索引、git 历史、代码解析
+  graph/       知识图谱与向量索引
+  memory/      会话记忆
+  knowledge/   外部材料导入与检索
+  llm/         模型 provider 配置与客户端
+  skills/      技能系统
 
 apps/
-  server/      # 本地 HTTP server（所有端共享）
-  desktop/     # Tauri 桌面应用（TODO）
+  server/            loci-server HTTP API
+  desktop/           React + Tauri 桌面端
+  vscode-extension/  VS Code 插件
 ```
 
-## 快速开始
+## 安装与配置
+
+先准备 Rust 1.78+，然后在仓库根目录执行：
 
 ```bash
-# 安装 Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# 配置环境变量
-export OPENAI_API_KEY=sk-...
-export LLM_BASE_URL=http://localhost:11434/v1  # Ollama（可选）
-export LLM_MODEL=gpt-4o
-
-# 启动本地 server
-cargo run -p loci-server
-
-# 调用
-curl -X POST http://localhost:3000/run \
-  -H 'Content-Type: application/json' \
-  -d '{"goal": "列出当前目录的文件并统计行数", "working_dir": "/tmp"}'
+cargo build --workspace
 ```
 
-## 环境变量
+LLM provider 可以通过环境变量或配置文件提供。推荐复制 [config.example.toml](config.example.toml) 到：
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `OPENAI_API_KEY` | API Key（必填） | - |
-| `LLM_BASE_URL` | 自定义 endpoint（Ollama 等） | OpenAI 官方 |
-| `LLM_MODEL` | 模型名称 | `gpt-4o` |
+- 项目级：`.bs/config.toml`
+- 全局：`~/.config/bs/config.toml`
 
-## 自定义 Provider
-
-复制 `config.example.toml` 到 `.bs/config.toml`（项目级）或 `~/.config/bs/config.toml`（全局）：
+示例：
 
 ```toml
-default_provider = "ollama"
-
-[[providers]]
-name = "ollama"
-base_url = "http://localhost:11434/v1"
-model = "qwen2.5-coder:7b"
-api_key = "ollama"
+default_provider = "openai"
 
 [[providers]]
 name = "openai"
@@ -67,53 +60,107 @@ model = "gpt-4o"
 api_key_env = "OPENAI_API_KEY"
 ```
 
-使用指定 provider：
-
-```bash
-loci ask "这个模块是做什么的" --provider ollama
-loci ask "帮我分析架构" --provider deepseek
-```
-
-## 开发路线
-
-详见 [docs/ROADMAP.md](docs/ROADMAP.md)
-
-**已完成：**
-- [x] 核心类型定义
-- [x] LLM 客户端（OpenAI 兼容，多 provider 配置）
-- [x] 工具注册表 + 基础工具（shell/file/http）
-- [x] 动态 Planner（LLM 任务分解 + DAG 执行）
-- [x] 本地 HTTP Server
-- [x] Rust / Python / TypeScript AST 解析
-- [x] 项目扫描器 + Git 历史分析
-- [x] 知识图谱（节点/边 + SQLite 持久化）
-- [x] 向量索引（余弦相似度语义检索）
-- [x] 记忆系统（三层：session/project/global）
-- [x] 知识库（文件/URL 导入 + 目录监听）
-- [x] CLI 完整命令集（index/embed/ask/graph/history/memory/knowledge）
-- [x] 多轮对话交互模式
-- [x] 增量索引
-
-**待完成（P0）：**
-- [ ] 真实项目验证 + bug 修复
-- [ ] `loci explain <file|symbol>`
-- [ ] `loci diff [commit]`
-
-## CLI 使用
+也可以直接使用环境变量：
 
 ```bash
 export OPENAI_API_KEY=sk-...
-
-# 索引当前项目
-loci index .
-
-# 问问题
-loci ask "这个项目的核心模块是什么？"
-loci ask "LlmClient trait 在哪里定义，有哪些实现？"
-
-# 查看知识图谱
-loci graph
-
-# 查看文件 git 历史
-loci history crates/agent/src/executor.rs
 ```
+
+## 命令行快速开始
+
+`loci` 是主入口二进制，常用命令如下：
+
+```bash
+# 索引项目
+cargo run -p loci-cli -- index .
+
+# 询问代码库
+cargo run -p loci-cli -- ask "这个项目的核心模块是什么？" --path .
+
+# 解释文件 / 追溯原因
+cargo run -p loci-cli -- explain crates/cli/src/main.rs --path .
+cargo run -p loci-cli -- trace crates/cli/src/main.rs --path .
+
+# 解释最近变更
+cargo run -p loci-cli -- diff --path .
+
+# 生成文档
+cargo run -p loci-cli -- doc onboarding --path .
+cargo run -p loci-cli -- doc module --path .
+
+# 跑评测
+cargo run -p loci-cli -- eval --path .
+
+# 项目、记忆、知识库
+cargo run -p loci-cli -- project list
+cargo run -p loci-cli -- memory list --path .
+cargo run -p loci-cli -- knowledge list --path .
+```
+
+完整命令列表：
+
+```bash
+cargo run -p loci-cli -- --help
+```
+
+## HTTP API
+
+本地服务既可以单独使用，也作为桌面端和 VS Code 插件的后端：
+
+```bash
+cargo run -p loci-server
+# 或
+cargo run -p loci-cli -- serve --path .
+```
+
+默认监听 `http://localhost:3000`。当前 API 同时提供兼容根路径和版本化路径：
+
+- `GET /health`
+- `GET /meta`
+- `GET /openapi.json`
+- `POST /api/v1/ask`
+- `POST /api/v1/explain`
+- `POST /api/v1/diff`
+- `POST /api/v1/trace`
+- `POST /api/v1/doc`
+- `POST /api/v1/eval`
+- `GET /api/v1/projects`
+- `POST /api/v1/knowledge/search`
+- `POST /api/v1/history`
+
+## 桌面端
+
+桌面端位于 [apps/desktop](/root/inteye/loci/apps/desktop)，当前已经覆盖 `Chat`、`Trace`、`Docs`、`Eval`、`Graph`、`Memory`。
+
+开发模式：
+
+```bash
+cd apps/desktop
+npm install
+npm run tauri dev
+```
+
+桌面端依赖本地 `loci serve` 或 `loci-server` 实例，默认使用 `http://localhost:3000`。
+
+## VS Code 插件
+
+插件位于 [apps/vscode-extension](/root/inteye/loci/apps/vscode-extension)，当前命令包括：
+
+- `loci: Ask a question`
+- `loci: Explain this file`
+- `loci: Explain recent changes`
+- `loci: Index project`
+
+本地开发：
+
+```bash
+cd apps/vscode-extension
+npm install
+npm run compile
+```
+
+然后在 VS Code 里运行 Extension Host。插件默认连接 `http://localhost:3000`，可通过 `loci.serverUrl` 配置覆盖。
+
+## 当前状态
+
+README 现在描述的是当前 alpha 阶段的真实入口，而不是早期原型。更细的演进路线和剩余工作见 [docs/ROADMAP.md](/root/inteye/loci/docs/ROADMAP.md)。
