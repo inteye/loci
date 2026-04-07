@@ -67,12 +67,14 @@ button {
 .brand-block h1 {
   margin: 0;
   font-size: 22px;
+  overflow-wrap: anywhere;
 }
 
 .brand-block p {
   margin: 4px 0 0;
   color: #8ea0b2;
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .sidebar-section {
@@ -82,8 +84,6 @@ button {
 .sidebar-section-label,
 .eyebrow,
 .context-label {
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
   font-size: 11px;
   color: #86a1ba;
   margin-bottom: 10px;
@@ -211,11 +211,15 @@ button {
 
 .tool-button span {
   font-weight: 600;
+  width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .tool-button small {
   color: #86a1ba;
   line-height: 1.45;
+  width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .tool-button.active {
@@ -238,6 +242,7 @@ button {
 .workspace-header h2 {
   margin: 4px 0 8px;
   font-size: 32px;
+  overflow-wrap: anywhere;
 }
 
 .status-pill {
@@ -270,6 +275,7 @@ button {
   border-radius: 16px;
   border: 1px solid rgba(169, 188, 203, 0.12);
   background: rgba(10, 18, 29, 0.72);
+  overflow-wrap: anywhere;
 }
 
 .status-banner.loading {
@@ -321,6 +327,7 @@ button {
 .context-card p,
 .node-card strong {
   color: #f2f6fb;
+  overflow-wrap: anywhere;
 }
 
 .suggestion-list {
@@ -360,8 +367,7 @@ button {
   margin-bottom: 12px;
   color: #86a1ba;
   font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
 }
 
 .composer {
@@ -411,6 +417,7 @@ button {
 
 .toolbar-actions input {
   flex: 1;
+  min-width: 0;
 }
 
 .metric-row {
@@ -454,12 +461,14 @@ button {
   display: block;
   color: #86a1ba;
   margin-top: 4px;
+  overflow-wrap: anywhere;
 }
 
 .node-card p {
   margin: 10px 0 0;
   color: #dbe6ef;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .kind-file { background: rgba(42, 79, 113, 0.38); }
@@ -472,6 +481,7 @@ button {
 .evidence-card {
   padding: 14px;
   color: #cfdbe6;
+  overflow-wrap: anywhere;
 }
 
 .markdown-card {
@@ -486,6 +496,8 @@ button {
 .markdown-body {
   color: #dfe7ef;
   line-height: 1.65;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .markdown-body h1,
@@ -550,21 +562,25 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
 }
 
 .result-header {
   display: flex;
   justify-content: space-between;
   gap: 14px;
+  min-width: 0;
 }
 
 .result-header p {
   margin: 6px 0 0;
+  overflow-wrap: anywhere;
 }
 
 .memory-card {
   color: #dfe7ef;
   line-height: 1.55;
+  overflow-wrap: anywhere;
 }
 
 .context-panel {
@@ -578,6 +594,7 @@ button {
   padding-left: 1.1rem;
   color: #c6d4e1;
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .empty-state,

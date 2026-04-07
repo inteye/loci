@@ -72,40 +72,40 @@ interface ChatMessage {
 
 const panelHelp: Record<Panel, { title: string; description: string }> = {
   chat: {
-    title: 'Ask the codebase',
-    description: 'Use the main chat to ask architecture, ownership, and design questions after indexing the project.',
+    title: '代码库问答',
+    description: '索引完成后，在主聊天区直接提问架构、职责、设计原因和上手路径。',
   },
   trace: {
-    title: 'Inspect trace evidence',
-    description: 'Look up a file path or symbol to inspect decisions, commits, and evidence edges captured in the graph.',
+    title: '追溯分析',
+    description: '按文件路径或符号查看决策节点、提交记录和证据边，定位“为什么这样设计”。',
   },
   docs: {
-    title: 'Generate working docs',
-    description: 'Create onboarding, module, or handoff docs from the current graph, decisions, and concepts.',
+    title: '文档生成',
+    description: '根据当前图谱、概念和决策生成 onboarding、模块说明或交接文档。',
   },
   eval: {
-    title: 'Run quality checks',
-    description: 'Evaluate how well the current index supports architecture, traceability, and onboarding questions.',
+    title: '质量评测',
+    description: '用内置评测问题检查当前索引对架构理解、Trace 和上手引导的支持效果。',
   },
   graph: {
-    title: 'Browse graph structure',
-    description: 'Inspect indexed nodes and edges to see what the codebase graph currently knows.',
+    title: '图谱浏览',
+    description: '查看当前索引生成了哪些节点和边，确认图谱到底知道什么。',
   },
   memory: {
-    title: 'Review recent memory',
-    description: 'See the most recent short-term memories captured from desktop question answering.',
+    title: '近期记忆',
+    description: '查看桌面端问答过程中沉淀下来的近期短期记忆内容。',
   },
 }
 
 const statusDefaults: Record<Operation, StatusEntry> = {
-  project: { state: 'idle', message: 'Choose a project folder to start.' },
-  index: { state: 'idle', message: 'Index the selected project before relying on graph-driven answers.' },
-  ask: { state: 'idle', message: 'Ask a direct question about the indexed project.' },
-  trace: { state: 'idle', message: 'Enter a file path or symbol to inspect trace evidence.' },
-  docs: { state: 'idle', message: 'Generate one of the built-in documentation views.' },
-  eval: { state: 'idle', message: 'Run evaluation prompts against the current index.' },
-  graph: { state: 'idle', message: 'Load the current graph to inspect nodes and edges.' },
-  memory: { state: 'idle', message: 'Load recent memory entries from desktop question answering.' },
+  project: { state: 'idle', message: '先选择项目目录，再执行索引和问答。' },
+  index: { state: 'idle', message: '开始提问前，先为当前项目建立索引。' },
+  ask: { state: 'idle', message: '直接输入关于当前代码库的问题。' },
+  trace: { state: 'idle', message: '输入文件路径或符号名称查看 Trace 证据。' },
+  docs: { state: 'idle', message: '生成当前项目的内置文档视图。' },
+  eval: { state: 'idle', message: '运行评测问题，检查当前索引质量。' },
+  graph: { state: 'idle', message: '加载图谱，查看节点和边的情况。' },
+  memory: { state: 'idle', message: '加载桌面端问答生成的近期记忆。' },
 }
 
 const suggestedQuestions = [
@@ -130,8 +130,8 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     makeMessage(
       'system',
-      'Select a project, run indexing, then ask architecture, trace, or onboarding questions here.',
-      'Welcome',
+      '先选择项目并完成索引，然后在这里提问架构、追溯原因、设计决策或新同事上手问题。',
+      '欢迎使用',
     ),
   ])
   const [traceTarget, setTraceTarget] = useState('')
@@ -154,13 +154,13 @@ export default function App() {
         setProjectPath(path)
         setStatuses((prev) => ({
           ...prev,
-          project: { state: 'success', message: `Loaded default project: ${path}` },
+          project: { state: 'success', message: `已加载默认项目：${path}` },
         }))
       })
       .catch((error) => {
         setStatuses((prev) => ({
           ...prev,
-          project: { state: 'error', message: `Could not load default project: ${String(error)}` },
+          project: { state: 'error', message: `加载默认项目失败：${String(error)}` },
         }))
       })
   }, [])
@@ -191,15 +191,15 @@ export default function App() {
   }
 
   async function handlePickProjectPath() {
-    updateStatus('project', 'loading', 'Opening project picker...')
+    updateStatus('project', 'loading', '正在打开项目目录选择器...')
     try {
       const selected = await open({
         directory: true,
         multiple: false,
-        title: 'Select project directory',
+        title: '选择项目目录',
       })
       if (!selected || Array.isArray(selected)) {
-        updateStatus('project', 'idle', 'Project selection cancelled.')
+        updateStatus('project', 'idle', '已取消项目目录选择。')
         return
       }
       setProjectPath(selected)
@@ -210,16 +210,16 @@ export default function App() {
       setMemories([])
       setMessages((prev) => [
         prev[0],
-        makeMessage('system', `Project path updated to \`${selected}\`. Re-index before asking if this is a new project.`, 'Project changed'),
+        makeMessage('system', `项目路径已更新为 \`${selected}\`。\n\n如果这是一个新项目，请先重新执行索引。`, '项目已切换'),
       ])
-      updateStatus('project', 'success', `Selected project: ${selected}`)
+      updateStatus('project', 'success', `已选择项目：${selected}`)
     } catch (error) {
-      updateStatus('project', 'error', `Could not open project picker: ${String(error)}`)
+      updateStatus('project', 'error', `打开项目选择器失败：${String(error)}`)
     }
   }
 
   async function handleIndex() {
-    updateStatus('index', 'loading', 'Indexing project and rebuilding the local graph...')
+    updateStatus('index', 'loading', '正在索引项目并重建本地图谱...')
     try {
       const result = await invoke<string>('index_project', { projectPath })
       setGraph(null)
@@ -229,100 +229,100 @@ export default function App() {
       setMemories([])
       setMessages((prev) => [
         ...prev,
-        makeMessage('system', `Index completed.\n\n${result}`, 'Index finished'),
+        makeMessage('system', `索引完成。\n\n${result}`, '索引完成'),
       ])
       updateStatus('index', 'success', result)
     } catch (error) {
-      updateStatus('index', 'error', `Index failed: ${String(error)}`)
+      updateStatus('index', 'error', `索引失败：${String(error)}`)
     }
   }
 
   async function handleAsk() {
     const trimmed = question.trim()
     if (!trimmed) {
-      updateStatus('ask', 'error', 'Enter a question before sending.')
+      updateStatus('ask', 'error', '请输入问题后再发送。')
       return
     }
 
     const userMessage = makeMessage('user', trimmed)
     setMessages((prev) => [...prev, userMessage])
     setQuestion('')
-    updateStatus('ask', 'loading', 'Thinking through the indexed project...')
+    updateStatus('ask', 'loading', '正在结合当前索引和上下文生成回答...')
 
     try {
       const answer = await invoke<string>('ask', { projectPath, question: trimmed })
-      setMessages((prev) => [...prev, makeMessage('assistant', answer, 'Answer')])
-      updateStatus('ask', 'success', 'Answer generated from the local graph and memory context.')
+      setMessages((prev) => [...prev, makeMessage('assistant', answer, '回答')])
+      updateStatus('ask', 'success', '已基于本地图谱和记忆上下文生成回答。')
     } catch (error) {
-      const message = `Ask failed: ${String(error)}`
-      setMessages((prev) => [...prev, makeMessage('system', message, 'Error')])
+      const message = `问答失败：${String(error)}`
+      setMessages((prev) => [...prev, makeMessage('system', message, '错误')])
       updateStatus('ask', 'error', message)
     }
   }
 
   async function loadTrace(target = traceTarget) {
     updateStatus('trace', 'loading', target.trim()
-      ? `Loading trace view for "${target.trim()}"...`
-      : 'Loading recent decision trace...')
+      ? `正在加载 “${target.trim()}” 的 Trace 视图...`
+      : '正在加载最近的决策 Trace...')
     try {
       const data = await invoke<TraceData>('get_trace', { projectPath, target })
       setTrace(data)
       updateStatus(
         'trace',
         'success',
-        `${data.decisions.length} decisions, ${data.commits.length} commits, ${data.evidence.length} evidence edges loaded.`,
+        `已加载 ${data.decisions.length} 个决策、${data.commits.length} 个提交、${data.evidence.length} 条证据边。`,
       )
     } catch (error) {
       setTrace(null)
-      updateStatus('trace', 'error', `Trace failed: ${String(error)}`)
+      updateStatus('trace', 'error', `Trace 加载失败：${String(error)}`)
     }
   }
 
   async function loadDoc(kind = docKind) {
-    updateStatus('docs', 'loading', `Generating ${kind} document from the local graph...`)
+    updateStatus('docs', 'loading', `正在根据本地图谱生成 ${kind} 文档...`)
     try {
       const data = await invoke<DocData>('get_doc', { projectPath, kind, provider: null })
       setDoc(data)
-      updateStatus('docs', 'success', `${kind} document generated.`)
+      updateStatus('docs', 'success', `${kind} 文档已生成。`)
     } catch (error) {
       setDoc(null)
-      updateStatus('docs', 'error', `Document generation failed: ${String(error)}`)
+      updateStatus('docs', 'error', `文档生成失败：${String(error)}`)
     }
   }
 
   async function loadEval() {
-    updateStatus('eval', 'loading', 'Running evaluation prompts against the indexed project...')
+    updateStatus('eval', 'loading', '正在针对当前索引运行评测问题...')
     try {
       const data = await invoke<EvalData>('get_eval', { projectPath, provider: null })
       setEvalData(data)
-      updateStatus('eval', 'success', `Average score ${data.average_score.toFixed(2)}/5 across ${data.results.length} prompts.`)
+      updateStatus('eval', 'success', `平均得分 ${data.average_score.toFixed(2)}/5，共 ${data.results.length} 个评测问题。`)
     } catch (error) {
       setEvalData(null)
-      updateStatus('eval', 'error', `Evaluation failed: ${String(error)}`)
+      updateStatus('eval', 'error', `评测失败：${String(error)}`)
     }
   }
 
   async function loadGraph() {
-    updateStatus('graph', 'loading', 'Loading graph nodes and edges...')
+    updateStatus('graph', 'loading', '正在加载图谱节点和边...')
     try {
       const data = await invoke<GraphData>('get_graph', { projectPath })
       setGraph(data)
-      updateStatus('graph', 'success', `${data.nodes.length} nodes and ${data.edges.length} edges loaded.`)
+      updateStatus('graph', 'success', `已加载 ${data.nodes.length} 个节点和 ${data.edges.length} 条边。`)
     } catch (error) {
       setGraph(null)
-      updateStatus('graph', 'error', `Graph loading failed: ${String(error)}`)
+      updateStatus('graph', 'error', `图谱加载失败：${String(error)}`)
     }
   }
 
   async function loadMemories() {
-    updateStatus('memory', 'loading', 'Loading recent desktop memories...')
+    updateStatus('memory', 'loading', '正在加载近期记忆...')
     try {
       const data = await invoke<string[]>('get_memories', { projectPath })
       setMemories(data)
-      updateStatus('memory', 'success', data.length === 0 ? 'No memories yet.' : `${data.length} memory entries loaded.`)
+      updateStatus('memory', 'success', data.length === 0 ? '当前还没有记忆。' : `已加载 ${data.length} 条记忆。`)
     } catch (error) {
       setMemories([])
-      updateStatus('memory', 'error', `Memory loading failed: ${String(error)}`)
+      updateStatus('memory', 'error', `记忆加载失败：${String(error)}`)
     }
   }
 
@@ -335,14 +335,14 @@ export default function App() {
           <div className="brand-mark">l</div>
           <div>
             <h1>loci desktop</h1>
-            <p>Local-first codebase understanding workspace</p>
+            <p>本地优先的代码库理解工作台</p>
           </div>
         </div>
 
         <div className="sidebar-section">
-          <div className="sidebar-section-label">Workspace</div>
+          <div className="sidebar-section-label">工作区</div>
           <div className="project-card">
-            <label htmlFor="project-path">Project path</label>
+            <label htmlFor="project-path">项目路径</label>
             <div className="project-actions">
               <input
                 id="project-path"
@@ -351,18 +351,18 @@ export default function App() {
                 placeholder="/path/to/project"
               />
               <button type="button" className="secondary-button" onClick={handlePickProjectPath} disabled={statuses.project.state === 'loading'}>
-                Choose project
+                选择项目
               </button>
             </div>
-            <p>Select the repository folder you want to index and query.</p>
+            <p>选择要建立索引和进行问答的仓库目录。</p>
             <button type="button" className="primary-button wide-button" onClick={handleIndex} disabled={disabled}>
-              {statuses.index.state === 'loading' ? 'Indexing...' : 'Index project'}
+              {statuses.index.state === 'loading' ? '索引中...' : '建立索引'}
             </button>
           </div>
         </div>
 
         <div className="sidebar-section">
-          <div className="sidebar-section-label">Tools</div>
+          <div className="sidebar-section-label">工具面板</div>
           <nav className="tool-nav">
             {(Object.keys(panelHelp) as Panel[]).map((key) => (
               <button
@@ -383,7 +383,7 @@ export default function App() {
         <header className="workspace-header">
           <div>
             <div className="eyebrow">{panelHelp[panel].title}</div>
-            <h2>{panel === 'chat' ? 'Chat with the indexed codebase' : panelHelp[panel].title}</h2>
+            <h2>{panel === 'chat' ? '和当前代码库对话' : panelHelp[panel].title}</h2>
             <p>{panelHelp[panel].description}</p>
           </div>
           <StatusPill status={statuses[panel === 'chat' ? 'ask' : panel]} />
@@ -397,8 +397,8 @@ export default function App() {
               <div className="chat-layout">
                 <div className="helper-strip">
                   <div>
-                    <strong>How to use this view</strong>
-                    <p>Index the selected project first, then ask direct questions about architecture, ownership, design rationale, or onboarding.</p>
+                    <strong>如何使用</strong>
+                    <p>先对当前项目建立索引，然后直接提问架构、职责、设计原因或新人上手路径。</p>
                   </div>
                   <div className="suggestion-list">
                     {suggestedQuestions.map((item) => (
@@ -421,7 +421,7 @@ export default function App() {
                 </div>
 
                 <div className="composer">
-                  <label htmlFor="chat-question">Question</label>
+                  <label htmlFor="chat-question">问题输入</label>
                   <textarea
                     id="chat-question"
                     value={question}
@@ -432,13 +432,13 @@ export default function App() {
                         void handleAsk()
                       }
                     }}
-                    placeholder="Ask what this system does, why a design exists, or where to start."
+                    placeholder="输入你想了解的问题，例如：这个系统做什么、为什么这样设计、应该从哪里开始看。"
                     rows={4}
                   />
                   <div className="composer-footer">
-                    <p>Press Enter to send. Press Shift+Enter for a new line.</p>
+                    <p>按 Enter 发送，按 Shift+Enter 换行。</p>
                     <button type="button" className="primary-button" onClick={handleAsk} disabled={disabled}>
-                      {statuses.ask.state === 'loading' ? 'Thinking...' : 'Send'}
+                      {statuses.ask.state === 'loading' ? '生成中...' : '发送'}
                     </button>
                   </div>
                 </div>
@@ -449,18 +449,18 @@ export default function App() {
               <div className="panel-stack">
                 <div className="toolbar">
                   <div className="toolbar-copy">
-                    <strong>Trace target</strong>
-                    <p>Leave it empty to inspect the latest decision nodes, or enter a file path or symbol name.</p>
+                    <strong>追溯目标</strong>
+                    <p>留空时查看最近的决策节点，也可以输入文件路径或符号名称进行追溯。</p>
                   </div>
                   <div className="toolbar-actions">
                     <input
                       value={traceTarget}
                       onChange={(event) => setTraceTarget(event.target.value)}
                       onKeyDown={(event) => event.key === 'Enter' && void loadTrace()}
-                      placeholder="crates/cli/src/main.rs or some_symbol"
+                      placeholder="例如：crates/cli/src/main.rs 或某个符号名"
                     />
                     <button type="button" className="primary-button" onClick={() => loadTrace()} disabled={disabled}>
-                      {statuses.trace.state === 'loading' ? 'Loading...' : 'Refresh trace'}
+                      {statuses.trace.state === 'loading' ? '加载中...' : '刷新追溯结果'}
                     </button>
                   </div>
                 </div>
@@ -470,22 +470,22 @@ export default function App() {
                     <>
                       <MetricRow
                         items={[
-                          ['Anchors', trace.anchors.length],
-                          ['Decisions', trace.decisions.length],
-                          ['Commits', trace.commits.length],
-                          ['Evidence', trace.evidence.length],
+                          ['锚点', trace.anchors.length],
+                          ['决策', trace.decisions.length],
+                          ['提交', trace.commits.length],
+                          ['证据', trace.evidence.length],
                         ]}
                       />
-                      <Section title="Anchors" empty="No matching file or symbol nodes yet.">
+                      <Section title="锚点节点" empty="当前还没有匹配到文件或符号节点。">
                         {trace.anchors.map((node) => <NodeCard key={node.id} node={node} />)}
                       </Section>
-                      <Section title="Decisions" empty="No decision nodes linked to this target yet. Run explain or diff to create them first.">
+                      <Section title="决策节点" empty="当前目标还没有关联到决策节点，通常需要先运行 explain 或 diff。">
                         {trace.decisions.map((node) => <NodeCard key={node.id} node={node} />)}
                       </Section>
-                      <Section title="Commits" empty="No commit evidence found for this target.">
+                      <Section title="提交记录" empty="当前目标还没有关联到提交证据。">
                         {trace.commits.map((node) => <NodeCard key={node.id} node={node} compact />)}
                       </Section>
-                      <Section title="Evidence" empty="No structured evidence edges recorded yet.">
+                      <Section title="证据边" empty="当前还没有记录结构化证据边。">
                         {trace.evidence.map((edge, index) => (
                           <div key={`${edge.from}-${edge.to}-${index}`} className="evidence-card">
                             <strong>{edge.kind}</strong>
@@ -493,7 +493,7 @@ export default function App() {
                           </div>
                         ))}
                       </Section>
-                      <Section title="Related nodes" empty="No related nodes were found.">
+                      <Section title="相关节点" empty="当前没有发现额外的相关节点。">
                         {trace.related.map((node) => <NodeCard key={node.id} node={node} compact />)}
                       </Section>
                     </>
@@ -506,23 +506,23 @@ export default function App() {
               <div className="panel-stack">
                 <div className="toolbar">
                   <div className="toolbar-copy">
-                    <strong>Document generator</strong>
-                    <p>Use this when you need onboarding notes, a module summary, or a handoff document from the current graph.</p>
+                    <strong>文档生成器</strong>
+                    <p>需要入门文档、模块概览或交接文档时，直接从当前图谱生成。</p>
                   </div>
                   <div className="toolbar-actions">
                     <select value={docKind} onChange={(event) => setDocKind(event.target.value)}>
-                      <option value="onboarding">onboarding</option>
-                      <option value="module">module</option>
-                      <option value="handoff">handoff</option>
+                      <option value="onboarding">入门文档</option>
+                      <option value="module">模块概览</option>
+                      <option value="handoff">交接文档</option>
                     </select>
                     <button type="button" className="primary-button" onClick={() => loadDoc()} disabled={disabled}>
-                      {statuses.docs.state === 'loading' ? 'Generating...' : 'Generate'}
+                      {statuses.docs.state === 'loading' ? '生成中...' : '生成文档'}
                     </button>
                   </div>
                 </div>
 
                 <PanelState status={statuses.docs} empty={!doc}>
-                  {doc ? <MarkdownCard title={`${doc.kind} document`} content={doc.content} /> : null}
+                  {doc ? <MarkdownCard title={`${doc.kind} 文档`} content={doc.content} /> : null}
                 </PanelState>
               </div>
             )}
@@ -531,12 +531,12 @@ export default function App() {
               <div className="panel-stack">
                 <div className="toolbar">
                   <div className="toolbar-copy">
-                    <strong>Evaluation runner</strong>
-                    <p>Run a small built-in evaluation set to see how useful the current local index is for core codebase questions.</p>
+                    <strong>评测执行器</strong>
+                    <p>运行一组内置评测问题，检查当前本地索引对核心代码库问题的支持情况。</p>
                   </div>
                   <div className="toolbar-actions">
                     <button type="button" className="primary-button" onClick={() => loadEval()} disabled={disabled}>
-                      {statuses.eval.state === 'loading' ? 'Running...' : 'Run eval'}
+                      {statuses.eval.state === 'loading' ? '运行中...' : '运行评测'}
                     </button>
                   </div>
                 </div>
@@ -546,12 +546,12 @@ export default function App() {
                     <>
                       <MetricRow
                         items={[
-                          ['Average score', `${evalData.average_score.toFixed(2)}/5`],
-                          ['Prompts', evalData.results.length],
-                          ['Drift notes', evalData.drift_check.length],
+                          ['平均分', `${evalData.average_score.toFixed(2)}/5`],
+                          ['问题数', evalData.results.length],
+                          ['偏移检查', evalData.drift_check.length],
                         ]}
                       />
-                      <Section title="Drift check" empty="No drift-check notes were returned.">
+                      <Section title="偏移检查" empty="当前没有返回偏移检查说明。">
                         {evalData.drift_check.map((line, index) => (
                           <div key={index} className="result-card">
                             <p>{line}</p>
@@ -569,7 +569,7 @@ export default function App() {
                               <span>{result.score.score}/5</span>
                             </div>
                             <p className="result-rationale">{result.score.rationale}</p>
-                            <MarkdownCard title="Answer" content={result.answer} />
+                            <MarkdownCard title="回答内容" content={result.answer} />
                           </div>
                         ))}
                       </div>
@@ -583,12 +583,12 @@ export default function App() {
               <div className="panel-stack">
                 <div className="toolbar">
                   <div className="toolbar-copy">
-                    <strong>Graph browser</strong>
-                    <p>This is the quickest way to see whether indexing captured files, symbols, decisions, and commits the way you expect.</p>
+                    <strong>图谱浏览器</strong>
+                    <p>这是检查索引是否正确捕获文件、符号、决策和提交的最快方式。</p>
                   </div>
                   <div className="toolbar-actions">
                     <button type="button" className="primary-button" onClick={() => loadGraph()} disabled={disabled}>
-                      {statuses.graph.state === 'loading' ? 'Loading...' : 'Refresh graph'}
+                      {statuses.graph.state === 'loading' ? '加载中...' : '刷新图谱'}
                     </button>
                   </div>
                 </div>
@@ -598,8 +598,8 @@ export default function App() {
                     <>
                       <MetricRow
                         items={[
-                          ['Nodes', graph.nodes.length],
-                          ['Edges', graph.edges.length],
+                          ['节点', graph.nodes.length],
+                          ['边', graph.edges.length],
                         ]}
                       />
                       <div className="node-grid">
@@ -608,7 +608,7 @@ export default function App() {
                         ))}
                       </div>
                       {graph.nodes.length > 120 && (
-                        <p className="footnote">Showing 120 of {graph.nodes.length} nodes. Use Trace for a narrower investigation.</p>
+                        <p className="footnote">当前仅展示前 120 个节点。需要进一步缩小范围时，请切换到 Trace 面板。</p>
                       )}
                     </>
                   ) : null}
@@ -620,12 +620,12 @@ export default function App() {
               <div className="panel-stack">
                 <div className="toolbar">
                   <div className="toolbar-copy">
-                    <strong>Recent memory</strong>
-                    <p>These are the recent short-term memory entries captured from desktop ask interactions.</p>
+                    <strong>近期记忆</strong>
+                    <p>这里展示的是桌面端问答过程中沉淀下来的近期短期记忆内容。</p>
                   </div>
                   <div className="toolbar-actions">
                     <button type="button" className="primary-button" onClick={() => loadMemories()} disabled={disabled}>
-                      {statuses.memory.state === 'loading' ? 'Loading...' : 'Refresh memory'}
+                      {statuses.memory.state === 'loading' ? '加载中...' : '刷新记忆'}
                     </button>
                   </div>
                 </div>
@@ -647,21 +647,21 @@ export default function App() {
 
           <aside className="context-panel">
             <div className="context-card">
-              <div className="context-label">Current project</div>
+              <div className="context-label">当前项目</div>
               <p>{projectPath}</p>
             </div>
 
             <div className="context-card">
-              <div className="context-label">Current panel</div>
+              <div className="context-label">当前面板</div>
               <p>{panelHelp[panel].description}</p>
             </div>
 
             <div className="context-card">
-              <div className="context-label">Operator notes</div>
+              <div className="context-label">操作提示</div>
               <ul>
-                <li>Index after changing the project path.</li>
-                <li>Use chat for broad questions, then switch to Trace or Docs for focused follow-up.</li>
-                <li>All desktop actions run locally; no external HTTP service is required.</li>
+                <li>切换项目路径后，建议先重新建立索引。</li>
+                <li>先在聊天区问大问题，再切到追溯或文档面板做进一步确认。</li>
+                <li>桌面端操作全部走本地能力，不依赖外部 HTTP 服务。</li>
               </ul>
             </div>
           </aside>
@@ -675,7 +675,7 @@ function MessageCard({ message }: { message: ChatMessage }) {
   return (
     <div className={`message-card ${message.role}`}>
       <div className="message-meta">
-        <span>{message.title ?? (message.role === 'user' ? 'You' : message.role === 'assistant' ? 'loci' : 'System')}</span>
+        <span>{message.title ?? (message.role === 'user' ? '你' : message.role === 'assistant' ? 'loci' : '系统')}</span>
       </div>
       <Markdown content={message.content} />
     </div>
@@ -709,7 +709,7 @@ function PanelState({
   children: React.ReactNode
 }) {
   if (status.state === 'loading') {
-    return <div className="empty-state">Loading...</div>
+    return <div className="empty-state">加载中...</div>
   }
   if (status.state === 'error') {
     return <div className="error-panel">{status.message}</div>
@@ -741,14 +741,21 @@ function StatusBanner({ statuses }: { statuses: Record<Operation, StatusEntry> }
 
   return (
     <div className={`status-banner ${tone}`}>
-      <strong>{tone === 'loading' ? 'Working' : tone === 'error' ? 'Attention' : 'Status'}</strong>
+      <strong>{tone === 'loading' ? '处理中' : tone === 'error' ? '需要关注' : '当前状态'}</strong>
       <span>{latest.message}</span>
     </div>
   )
 }
 
 function StatusPill({ status }: { status: StatusEntry }) {
-  return <span className={`status-pill ${status.state}`}>{status.state}</span>
+  const text = status.state === 'loading'
+    ? '处理中'
+    : status.state === 'success'
+      ? '完成'
+      : status.state === 'error'
+        ? '错误'
+        : '空闲'
+  return <span className={`status-pill ${status.state}`}>{text}</span>
 }
 
 function Section({
