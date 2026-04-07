@@ -20,6 +20,7 @@ loci-memory    = { path = "../../../crates/memory" }
 loci-knowledge = { path = "../../../crates/knowledge" }
 loci-codebase  = { path = "../../../crates/codebase" }
 tauri        = { version = "2", features = [] }
+tauri-plugin-dialog = { version = "2" }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 tokio        = { workspace = true }
