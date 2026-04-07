@@ -26,16 +26,16 @@ struct Cli {
 enum Command {
     /// Scan and index a codebase
     Index {
-        #[arg(default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
         /// Only re-parse files changed since last index
         #[arg(long)]
         incremental: bool,
     },
     /// Generate embeddings + LLM descriptions for all graph nodes
     Embed {
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
         #[arg(long)]
         provider: Option<String>,
     },
@@ -43,8 +43,8 @@ enum Command {
     Ask {
         /// Question (omit for interactive chat mode)
         question: Option<String>,
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
         #[arg(long)]
         provider: Option<String>,
     },
@@ -52,8 +52,8 @@ enum Command {
     Explain {
         /// File path or symbol name
         target: String,
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
         #[arg(long)]
         provider: Option<String>,
     },
@@ -62,8 +62,8 @@ enum Command {
         /// Commit ref or range (default: HEAD uncommitted changes)
         #[arg(default_value = "HEAD")]
         commit: String,
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
         #[arg(long)]
         provider: Option<String>,
     },
@@ -71,23 +71,23 @@ enum Command {
     Trace {
         /// File path or commit hash prefix
         target: String,
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
     },
     /// Generate project documentation from the graph, decisions, and concepts
     Doc {
         /// Document kind: onboarding, module, handoff
         #[arg(default_value = "onboarding")]
         kind: String,
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
         #[arg(long)]
         provider: Option<String>,
     },
     /// Run a lightweight real-project evaluation against the indexed codebase
     Eval {
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
         #[arg(long)]
         provider: Option<String>,
         #[arg(long)]
@@ -95,8 +95,8 @@ enum Command {
     },
     /// Run as background server (watches files + serves HTTP API)
     Serve {
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
         #[arg(long, default_value = "3000")]
         port: u16,
         #[arg(long)]
@@ -109,8 +109,8 @@ enum Command {
         /// Input: file path, or '-' to read from stdin
         #[arg(short, long)]
         input: Option<String>,
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
         #[arg(long)]
         provider: Option<String>,
     },
@@ -121,28 +121,28 @@ enum Command {
     },
     /// Show the knowledge graph
     Graph {
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
     },
     /// Show git history for a file
     History {
         file: String,
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
     },
     /// Manage memories
     Memory {
         #[command(subcommand)]
         action: MemoryAction,
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
     },
     /// Manage knowledge base
     Knowledge {
         #[command(subcommand)]
         action: KnowledgeAction,
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
         #[arg(long)]
         provider: Option<String>,
     },
@@ -151,7 +151,7 @@ enum Command {
 #[derive(Subcommand)]
 enum ProjectAction {
     /// Register current directory as a named project
-    Add { name: String, #[arg(short, long, default_value = ".")] path: PathBuf },
+    Add { name: String, #[arg(short, long)] path: Option<PathBuf> },
     /// List all registered projects
     List,
     /// Switch active project (sets default path for all commands)
@@ -185,21 +185,21 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     match cli.command {
-        Command::Index { path, incremental }                    => cmd_index(&path, incremental).await,
-        Command::Embed { path, provider }                        => cmd_embed(&path, provider.as_deref()).await,
-        Command::Ask { question, path, provider }                => cmd_ask(question.as_deref(), &path, provider.as_deref()).await,
-        Command::Graph { path }                          => cmd_graph(&path).await,
-        Command::History { file, path }                  => cmd_history(&file, &path).await,
-        Command::Explain { target, path, provider }      => cmd_explain(&target, &path, provider.as_deref()).await,
-        Command::Diff { commit, path, provider }         => cmd_diff(&commit, &path, provider.as_deref()).await,
-        Command::Trace { target, path }                  => cmd_trace(&target, &path).await,
-        Command::Doc { kind, path, provider }           => cmd_doc(&kind, &path, provider.as_deref()).await,
-        Command::Eval { path, provider, output }       => cmd_eval(&path, provider.as_deref(), output.as_ref()).await,
-        Command::Serve { path, port, provider }          => cmd_serve(&path, port, provider.as_deref()).await,
-        Command::Project { action }                      => cmd_project(action).await,
-        Command::Skill { name, input, path, provider }   => cmd_skill(name.as_deref(), input.as_deref(), &path, provider.as_deref()).await,
-        Command::Memory { action, path }                 => cmd_memory(action, &path).await,
-        Command::Knowledge { action, path, provider }    => cmd_knowledge(action, &path, provider.as_deref()).await,
+        Command::Index { path, incremental }                    => cmd_index(&resolve_command_path(path)?, incremental).await,
+        Command::Embed { path, provider }                       => cmd_embed(&resolve_command_path(path)?, provider.as_deref()).await,
+        Command::Ask { question, path, provider }               => cmd_ask(question.as_deref(), &resolve_command_path(path)?, provider.as_deref()).await,
+        Command::Graph { path }                                 => cmd_graph(&resolve_command_path(path)?).await,
+        Command::History { file, path }                         => cmd_history(&file, &resolve_command_path(path)?).await,
+        Command::Explain { target, path, provider }             => cmd_explain(&target, &resolve_command_path(path)?, provider.as_deref()).await,
+        Command::Diff { commit, path, provider }                => cmd_diff(&commit, &resolve_command_path(path)?, provider.as_deref()).await,
+        Command::Trace { target, path }                         => cmd_trace(&target, &resolve_command_path(path)?).await,
+        Command::Doc { kind, path, provider }                   => cmd_doc(&kind, &resolve_command_path(path)?, provider.as_deref()).await,
+        Command::Eval { path, provider, output }                => cmd_eval(&resolve_command_path(path)?, provider.as_deref(), output.as_ref()).await,
+        Command::Serve { path, port, provider }                 => cmd_serve(&resolve_command_path(path)?, port, provider.as_deref()).await,
+        Command::Project { action }                             => cmd_project(action).await,
+        Command::Skill { name, input, path, provider }          => cmd_skill(name.as_deref(), input.as_deref(), &resolve_command_path(path)?, provider.as_deref()).await,
+        Command::Memory { action, path }                        => cmd_memory(action, &resolve_command_path(path)?).await,
+        Command::Knowledge { action, path, provider }           => cmd_knowledge(action, &resolve_command_path(path)?, provider.as_deref()).await,
     }
 }
 
@@ -863,6 +863,7 @@ async fn cmd_project(action: ProjectAction) -> Result<()> {
     let mut reg = load_registry();
     match action {
         ProjectAction::Add { name, path } => {
+            let path = resolve_command_path(path)?;
             let abs = std::fs::canonicalize(&path)
                 .unwrap_or(path.clone())
                 .to_string_lossy().to_string();
@@ -1484,6 +1485,24 @@ fn load_previous_eval_report(project_path: &PathBuf) -> Option<EvalReport> {
 fn bs_dir(p: &PathBuf) -> PathBuf {
     let d = p.join(".bs"); std::fs::create_dir_all(&d).ok(); d
 }
+
+fn resolve_command_path(path: Option<PathBuf>) -> Result<PathBuf> {
+    let raw = match path {
+        Some(path) => path,
+        None => active_project_path().unwrap_or(std::env::current_dir()?),
+    };
+    Ok(std::fs::canonicalize(&raw).unwrap_or(raw))
+}
+
+fn active_project_path() -> Option<PathBuf> {
+    let reg = load_registry();
+    let active = reg.active?;
+    reg.projects
+        .into_iter()
+        .find(|p| p.name == active)
+        .map(|p| PathBuf::from(p.path))
+}
+
 fn graph_db_path(p: &PathBuf)     -> String { bs_dir(p).join("graph.db").to_string_lossy().to_string() }
 fn memory_db_path(p: &PathBuf)    -> String { bs_dir(p).join("memory.db").to_string_lossy().to_string() }
 fn knowledge_db_path(p: &PathBuf) -> String { bs_dir(p).join("knowledge.db").to_string_lossy().to_string() }

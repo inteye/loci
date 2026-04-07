@@ -94,6 +94,28 @@ export OPENAI_API_KEY=sk-...
 
 `loci` 是主入口二进制。下面示例优先使用全局安装后的形式；如果你还没安装，也可以把 `loci` 替换成 `cargo run -p loci-cli --`。
 
+最重要的约束是：`index` 和后续 `ask / explain / trace / doc / eval` 必须指向同一个项目路径。最稳妥的做法有两种：
+
+1. 始终显式传 `--path`
+2. 先注册并切换 active project，再直接运行命令
+
+示例一：显式路径
+
+```bash
+loci index --path /path/to/repo
+loci ask "这个项目的核心模块是什么？" --path /path/to/repo
+loci trace crates/cli/src/main.rs --path /path/to/repo
+```
+
+示例二：使用项目注册表
+
+```bash
+loci project add myrepo --path /path/to/repo
+loci project use myrepo
+loci index
+loci ask "这个项目的核心模块是什么？"
+```
+
 ```bash
 # 索引项目
 loci index .
