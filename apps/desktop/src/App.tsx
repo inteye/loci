@@ -489,7 +489,7 @@ export default function App() {
                         {trace.evidence.map((edge, index) => (
                           <div key={`${edge.from}-${edge.to}-${index}`} className="evidence-card">
                             <strong>{edge.kind}</strong>
-                            <div>{edge.from} -> {edge.to}</div>
+                            <div>{edge.from}{' -> '}{edge.to}</div>
                           </div>
                         ))}
                       </Section>
