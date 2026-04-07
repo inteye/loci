@@ -151,7 +151,7 @@ loci --help
 
 ## HTTP API
 
-本地服务既可以单独使用，也作为桌面端和 VS Code 插件的后端：
+本地服务是独立入口，主要给 CLI 的 `serve` 模式、外部集成和 VS Code 插件使用；桌面端本身不再要求先启动它：
 
 ```bash
 loci-server
@@ -186,7 +186,18 @@ npm install
 npm run tauri dev
 ```
 
-桌面端依赖本地 `loci serve` 或 `loci-server` 实例，默认使用 `http://localhost:3000`。
+桌面端现在直接调用内嵌的本地图谱、问答和评测逻辑，不再要求用户先手动启动 `loci serve`。
+
+开发与打包：
+
+```bash
+cd apps/desktop
+npm install
+npm run tauri:dev
+npm run tauri:build
+```
+
+`tauri build` 会按当前平台输出安装包；在 macOS 上会生成 `.app` 和 `.dmg`。
 
 ## VS Code 插件
 
