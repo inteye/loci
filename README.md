@@ -44,6 +44,30 @@ apps/
 cargo build --workspace
 ```
 
+如果你希望像 `npm install -g` 一样全局直接使用 `loci`，Rust 下对应的方式是 `cargo install`：
+
+```bash
+# 从当前仓库全局安装 loci
+cargo install --path crates/cli
+
+# 或使用仓库里的快捷入口
+make install
+```
+
+安装完成后，二进制会进入 `~/.cargo/bin/loci`。确保 `~/.cargo/bin` 在 `PATH` 里，然后就可以直接执行：
+
+```bash
+loci --help
+loci index .
+loci ask "这个项目的核心模块是什么？" --path .
+```
+
+如果更新了本地源码并希望覆盖安装：
+
+```bash
+cargo install --path crates/cli --force
+```
+
 LLM provider 可以通过环境变量或配置文件提供。推荐复制 [config.example.toml](config.example.toml) 到：
 
 - 项目级：`.bs/config.toml`
@@ -68,39 +92,39 @@ export OPENAI_API_KEY=sk-...
 
 ## 命令行快速开始
 
-`loci` 是主入口二进制，常用命令如下：
+`loci` 是主入口二进制。下面示例优先使用全局安装后的形式；如果你还没安装，也可以把 `loci` 替换成 `cargo run -p loci-cli --`。
 
 ```bash
 # 索引项目
-cargo run -p loci-cli -- index .
+loci index .
 
 # 询问代码库
-cargo run -p loci-cli -- ask "这个项目的核心模块是什么？" --path .
+loci ask "这个项目的核心模块是什么？" --path .
 
 # 解释文件 / 追溯原因
-cargo run -p loci-cli -- explain crates/cli/src/main.rs --path .
-cargo run -p loci-cli -- trace crates/cli/src/main.rs --path .
+loci explain crates/cli/src/main.rs --path .
+loci trace crates/cli/src/main.rs --path .
 
 # 解释最近变更
-cargo run -p loci-cli -- diff --path .
+loci diff --path .
 
 # 生成文档
-cargo run -p loci-cli -- doc onboarding --path .
-cargo run -p loci-cli -- doc module --path .
+loci doc onboarding --path .
+loci doc module --path .
 
 # 跑评测
-cargo run -p loci-cli -- eval --path .
+loci eval --path .
 
 # 项目、记忆、知识库
-cargo run -p loci-cli -- project list
-cargo run -p loci-cli -- memory list --path .
-cargo run -p loci-cli -- knowledge list --path .
+loci project list
+loci memory list --path .
+loci knowledge list --path .
 ```
 
 完整命令列表：
 
 ```bash
-cargo run -p loci-cli -- --help
+loci --help
 ```
 
 ## HTTP API
@@ -108,9 +132,9 @@ cargo run -p loci-cli -- --help
 本地服务既可以单独使用，也作为桌面端和 VS Code 插件的后端：
 
 ```bash
-cargo run -p loci-server
+loci-server
 # 或
-cargo run -p loci-cli -- serve --path .
+loci serve --path .
 ```
 
 默认监听 `http://localhost:3000`。当前 API 同时提供兼容根路径和版本化路径：
