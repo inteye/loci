@@ -236,17 +236,22 @@ async fn build_graph(path: &PathBuf, index: &loci_codebase::CodebaseIndex) -> Re
     store.clear().await?;  // avoid duplicate nodes on re-index
     let mut graph = KnowledgeGraph::default();
     let mut commit_nodes: std::collections::HashMap<String, Uuid> = std::collections::HashMap::new();
+    let parsed_by_path: std::collections::HashMap<String, &loci_codebase::ParsedFile> = index.parsed_files.iter()
+        .map(|pf| (pf.path.clone(), pf))
+        .collect();
 
-    for pf in &index.parsed_files {
+    for file in index.summary.files.iter().filter(|file| file.language.is_code()) {
+        let parsed = parsed_by_path.get(&file.path.to_string_lossy().to_string()).copied();
         let file_node = Node {
             id: Uuid::new_v4(), kind: NodeKind::File,
-            name: pf.path.clone(), file_path: Some(pf.path.clone()),
-            description: pf.doc_comment.clone(), raw_source: None, created_at: Utc::now(),
+            name: file.relative_path.clone(), file_path: Some(file.path.to_string_lossy().to_string()),
+            description: parsed.and_then(|pf| pf.doc_comment.clone()), raw_source: None, created_at: Utc::now(),
         };
         let file_id = graph.add_node(file_node.clone());
         store.save_node(&file_node).await?;
 
-        if let Ok(history) = GitHistory::file_history(path, &pf.path, 3) {
+        let file_path = file.path.to_string_lossy().to_string();
+        if let Ok(history) = GitHistory::file_history(path, &file_path, 3) {
             for commit in history.commits {
                 let commit_id = if let Some(id) = commit_nodes.get(&commit.hash) {
                     *id
@@ -255,7 +260,7 @@ async fn build_graph(path: &PathBuf, index: &loci_codebase::CodebaseIndex) -> Re
                         id: Uuid::new_v4(),
                         kind: NodeKind::Commit,
                         name: commit.hash.clone(),
-                        file_path: Some(pf.path.clone()),
+                        file_path: Some(file_path.clone()),
                         description: Some(format!("{} — {}", commit.message, commit.author)),
                         raw_source: None,
                         created_at: chrono::DateTime::from_timestamp(commit.timestamp, 0).unwrap_or_else(Utc::now),
@@ -278,36 +283,44 @@ async fn build_graph(path: &PathBuf, index: &loci_codebase::CodebaseIndex) -> Re
             }
         }
 
-        for sym in &pf.symbols {
-            let kind = match sym.kind {
-                loci_codebase::SymbolKind::Struct => NodeKind::Struct,
-                loci_codebase::SymbolKind::Enum   => NodeKind::Enum,
-                loci_codebase::SymbolKind::Trait  => NodeKind::Trait,
-                loci_codebase::SymbolKind::Module => NodeKind::Module,
-                _ => NodeKind::Function,
-            };
-            let sym_node = Node {
-                id: Uuid::new_v4(), kind,
-                name: sym.name.clone(), file_path: Some(pf.path.clone()),
-                description: sym.doc_comment.clone(), raw_source: None, created_at: Utc::now(),
-            };
-            let sym_id = graph.add_node(sym_node.clone());
-            store.save_node(&sym_node).await?;
-            let edge = Edge { id: Uuid::new_v4(), from: file_id, to: sym_id, kind: EdgeKind::Contains, label: None };
-            graph.add_edge(edge.clone());
-            store.save_edge(&edge).await?;
-        }
+        if let Some(pf) = parsed {
+            for sym in &pf.symbols {
+                let kind = match sym.kind {
+                    loci_codebase::SymbolKind::Struct => NodeKind::Struct,
+                    loci_codebase::SymbolKind::Enum   => NodeKind::Enum,
+                    loci_codebase::SymbolKind::Trait  => NodeKind::Trait,
+                    loci_codebase::SymbolKind::Module => NodeKind::Module,
+                    _ => NodeKind::Function,
+                };
+                let sym_node = Node {
+                    id: Uuid::new_v4(), kind,
+                    name: sym.name.clone(), file_path: Some(file_path.clone()),
+                    description: sym.doc_comment.clone(), raw_source: None, created_at: Utc::now(),
+                };
+                let sym_id = graph.add_node(sym_node.clone());
+                store.save_node(&sym_node).await?;
+                let edge = Edge { id: Uuid::new_v4(), from: file_id, to: sym_id, kind: EdgeKind::Contains, label: None };
+                graph.add_edge(edge.clone());
+                store.save_edge(&edge).await?;
+            }
 
-        // Add Calls edges between symbols in this file
-        for (caller, callee) in &pf.calls {
-            let from_id = graph.nodes.iter().find(|n| &n.name == caller && n.file_path.as_deref() == Some(&pf.path)).map(|n| n.id);
-            let to_id   = graph.nodes.iter().find(|n| &n.name == callee && n.file_path.as_deref() == Some(&pf.path)).map(|n| n.id);
-            if let (Some(from), Some(to)) = (from_id, to_id) {
-                if from != to {
-                    let edge = Edge { id: Uuid::new_v4(), from, to, kind: EdgeKind::Calls, label: None };
-                    graph.add_edge(edge.clone());
-                    store.save_edge(&edge).await?;
+            // Add Calls edges between symbols in this file
+            for (caller, callee) in &pf.calls {
+                let from_id = graph.nodes.iter().find(|n| &n.name == caller && n.file_path.as_deref() == Some(file_path.as_str())).map(|n| n.id);
+                let to_id   = graph.nodes.iter().find(|n| &n.name == callee && n.file_path.as_deref() == Some(file_path.as_str())).map(|n| n.id);
+                if let (Some(from), Some(to)) = (from_id, to_id) {
+                    if from != to {
+                        let edge = Edge { id: Uuid::new_v4(), from, to, kind: EdgeKind::Calls, label: None };
+                        graph.add_edge(edge.clone());
+                        store.save_edge(&edge).await?;
+                    }
                 }
+            }
+        } else {
+            let raw_source = format!("parse failed or unsupported language-specific extraction");
+            store.update_node_description(file_id, &raw_source).await?;
+            if let Some(node) = graph.nodes.iter_mut().find(|node| node.id == file_id) {
+                node.description = Some(raw_source);
             }
         }
     }

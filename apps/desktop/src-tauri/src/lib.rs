@@ -4,6 +4,7 @@ mod commands;
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            commands::get_default_project_path,
             commands::get_graph,
             commands::get_trace,
             commands::get_doc,

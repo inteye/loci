@@ -729,6 +729,36 @@ fn save_registry(registry: &ProjectRegistry) {
     }
 }
 
+fn normalize_project_path(path: impl AsRef<std::path::Path>) -> String {
+    std::fs::canonicalize(path.as_ref())
+        .unwrap_or_else(|_| path.as_ref().to_path_buf())
+        .to_string_lossy()
+        .to_string()
+}
+
+fn active_project_path_from_registry() -> Option<String> {
+    let registry = load_registry();
+    let active = registry.active?;
+    registry.projects.into_iter()
+        .find(|project| project.name == active)
+        .map(|project| project.path)
+}
+
+fn default_project_path() -> String {
+    active_project_path_from_registry().unwrap_or_else(|| {
+        normalize_project_path(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")))
+    })
+}
+
+fn resolve_server_project_path(project_path: &str) -> String {
+    let trimmed = project_path.trim();
+    if trimmed.is_empty() || trimmed == "." {
+        default_project_path()
+    } else {
+        normalize_project_path(trimmed)
+    }
+}
+
 async fn current_project_path(state: &AppState) -> String {
     state.project_path.read().await.clone()
 }
@@ -795,9 +825,11 @@ async fn handle_project_remove(
     Json(req): Json<ProjectRemoveRequest>,
 ) -> Json<ProjectListResponse> {
     let mut registry = load_registry();
+    let removed_active = registry.active.as_deref() == Some(req.name.as_str());
     registry.projects.retain(|project| project.name != req.name);
-    if registry.active.as_deref() == Some(req.name.as_str()) {
+    if removed_active {
         registry.active = None;
+        *state.project_path.write().await = default_project_path();
     }
     save_registry(&registry);
 
@@ -1434,9 +1466,11 @@ async fn handle_project_remove_v1(
     if !registry.projects.iter().any(|project| project.name == req.name) {
         return api_err("project_not_found", format!("Project '{}' not found", req.name));
     }
+    let removed_active = registry.active.as_deref() == Some(req.name.as_str());
     registry.projects.retain(|project| project.name != req.name);
-    if registry.active.as_deref() == Some(req.name.as_str()) {
+    if removed_active {
         registry.active = None;
+        *state.project_path.write().await = default_project_path();
     }
     save_registry(&registry);
     api_ok(ProjectListResponse {
@@ -1592,7 +1626,10 @@ pub async fn run_server(port: u16, project_path: &str) -> anyhow::Result<()> {
     let tools = Arc::new(registry);
     let agent = Arc::new(Agent::new(llm, tools));
 
-    let state = AppState { agent, project_path: Arc::new(RwLock::new(project_path.to_string())) };
+    let state = AppState {
+        agent,
+        project_path: Arc::new(RwLock::new(resolve_server_project_path(project_path))),
+    };
 
     let api_v1 = Router::new()
         .route("/meta", get(handle_api_meta))

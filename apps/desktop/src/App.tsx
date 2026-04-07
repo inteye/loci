@@ -71,6 +71,12 @@ export default function App() {
   const [evalData, setEvalData] = useState<EvalData | null>(null)
   const [evalError, setEvalError] = useState('')
 
+  useEffect(() => {
+    invoke<string>('get_default_project_path')
+      .then(path => setProjectPath(path))
+      .catch(() => {})
+  }, [])
+
   async function handleAsk() {
     if (!question.trim()) return
     setLoading(true)

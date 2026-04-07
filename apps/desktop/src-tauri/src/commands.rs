@@ -3,8 +3,9 @@
 use loci_graph::{EdgeKind, NodeKind};
 use loci_llm::config::BsConfig;
 use loci_core::types::{Message, Role};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 
 #[derive(Serialize)]
 pub struct GraphData {
@@ -62,6 +63,103 @@ pub struct EvalData {
     pub average_score: f32,
     pub results: Vec<EvalResult>,
     pub drift_check: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct ProjectListResponse {
+    current_path: String,
+    projects: Vec<ProjectEntry>,
+}
+
+#[derive(Deserialize)]
+struct ProjectEntry {
+    name: String,
+    path: String,
+}
+
+fn normalize_project_path(path: &str) -> String {
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| std::path::PathBuf::from(path))
+        .to_string_lossy()
+        .to_string()
+}
+
+fn registry_path() -> std::path::PathBuf {
+    let dir = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/bs");
+    std::fs::create_dir_all(&dir).ok();
+    dir.join("projects.json")
+}
+
+fn default_project_path() -> String {
+    let active = std::fs::read_to_string(registry_path())
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|json| {
+            let active = json.get("active")?.as_str()?.to_string();
+            json.get("projects")?.as_array()?.iter()
+                .find(|project| project.get("name").and_then(|name| name.as_str()) == Some(active.as_str()))
+                .and_then(|project| project.get("path").and_then(|path| path.as_str()))
+                .map(|path| path.to_string())
+        });
+
+    active.unwrap_or_else(|| normalize_project_path("."))
+}
+
+fn resolve_project_path(project_path: &str) -> String {
+    let trimmed = project_path.trim();
+    if trimmed.is_empty() || trimmed == "." {
+        default_project_path()
+    } else {
+        normalize_project_path(trimmed)
+    }
+}
+
+fn project_alias(project_path: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    project_path.hash(&mut hasher);
+    let suffix = hasher.finish();
+    let base = std::path::Path::new(project_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("project");
+    format!("desktop-{}-{:x}", base, suffix)
+}
+
+async fn sync_server_project(project_path: &str) -> Result<(), String> {
+    let resolved = resolve_project_path(project_path);
+    let client = reqwest::Client::new();
+    let projects_url = "http://localhost:3000/projects";
+    let projects = client.get(projects_url)
+        .send().await
+        .map_err(|_| "loci serve not running. Start it with: loci serve".to_string())?
+        .json::<ProjectListResponse>().await
+        .map_err(|e| e.to_string())?;
+
+    if normalize_project_path(&projects.current_path) == resolved {
+        return Ok(());
+    }
+
+    if let Some(project) = projects.projects.iter().find(|project| normalize_project_path(&project.path) == resolved) {
+        client.post("http://localhost:3000/projects/use")
+            .json(&serde_json::json!({ "name": project.name }))
+            .send().await
+            .map_err(|_| "loci serve not running. Start it with: loci serve".to_string())?;
+        return Ok(());
+    }
+
+    let name = project_alias(&resolved);
+    let _ = client.post("http://localhost:3000/projects/add")
+        .json(&serde_json::json!({ "name": name, "path": resolved }))
+        .send().await
+        .map_err(|_| "loci serve not running. Start it with: loci serve".to_string())?;
+
+    client.post("http://localhost:3000/projects/use")
+        .json(&serde_json::json!({ "name": project_alias(&resolve_project_path(project_path)) }))
+        .send().await
+        .map_err(|_| "loci serve not running. Start it with: loci serve".to_string())?;
+
+    Ok(())
 }
 
 fn map_node(node: &loci_graph::Node) -> GraphNode {
@@ -138,6 +236,7 @@ fn build_doc_prompt(graph: &loci_graph::KnowledgeGraph, kind: &str) -> String {
 /// Load the knowledge graph for the given project path
 #[tauri::command]
 pub async fn get_graph(project_path: String) -> Result<GraphData, String> {
+    let project_path = resolve_project_path(&project_path);
     let db = format!("{}/.bs/graph.db", project_path);
     let store = loci_graph::GraphStore::new(&db).await.map_err(|e| e.to_string())?;
     let graph = store.load_graph().await.map_err(|e| e.to_string())?;
@@ -161,6 +260,7 @@ pub async fn get_graph(project_path: String) -> Result<GraphData, String> {
 /// Inspect trace-oriented nodes and edges for a file or symbol
 #[tauri::command]
 pub async fn get_trace(project_path: String, target: String) -> Result<TraceData, String> {
+    let project_path = resolve_project_path(&project_path);
     let db = format!("{}/.bs/graph.db", project_path);
     let store = loci_graph::GraphStore::new(&db).await.map_err(|e| e.to_string())?;
     let graph = store.load_graph().await.map_err(|e| e.to_string())?;
@@ -259,6 +359,7 @@ pub async fn get_trace(project_path: String, target: String) -> Result<TraceData
 /// Generate a document from graph decisions, concepts, and files
 #[tauri::command]
 pub async fn get_doc(project_path: String, kind: String, provider: Option<String>) -> Result<DocData, String> {
+    let project_path = resolve_project_path(&project_path);
     let cfg = BsConfig::load(std::path::Path::new(&project_path)).unwrap_or_default();
     let llm = cfg.build_client(provider.as_deref()).map_err(|e| e.to_string())?;
 
@@ -286,6 +387,7 @@ pub async fn get_doc(project_path: String, kind: String, provider: Option<String
 /// Run evaluation through the local loci server
 #[tauri::command]
 pub async fn get_eval(_project_path: String, provider: Option<String>) -> Result<EvalData, String> {
+    sync_server_project(&_project_path).await?;
     let url = "http://localhost:3000/eval";
     let client = reqwest::Client::new();
     let response = client.post(url)
@@ -299,6 +401,7 @@ pub async fn get_eval(_project_path: String, provider: Option<String>) -> Result
 /// Ask a question — proxies to the loci HTTP server if running
 #[tauri::command]
 pub async fn ask(_project_path: String, question: String) -> Result<String, String> {
+    sync_server_project(&_project_path).await?;
     // Try local loci serve first
     let url = "http://localhost:3000/ask";
     let client = reqwest::Client::new();
@@ -318,16 +421,30 @@ pub async fn ask(_project_path: String, question: String) -> Result<String, Stri
 /// Index the project
 #[tauri::command]
 pub async fn index_project(project_path: String) -> Result<String, String> {
-    let path = std::path::Path::new(&project_path);
-    let index = loci_codebase::CodebaseIndexer::index(path).map_err(|e| e.to_string())?;
-    Ok(format!("{} files, {} lines", index.summary.files.len(), index.summary.total_lines))
+    let project_path = resolve_project_path(&project_path);
+    let output = std::process::Command::new("loci")
+        .args(["index", "--path", &project_path])
+        .output()
+        .map_err(|e| format!("failed to run loci index: {}", e))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
 }
 
 /// Get recent memories
 #[tauri::command]
 pub async fn get_memories(project_path: String) -> Result<Vec<String>, String> {
+    let project_path = resolve_project_path(&project_path);
     let db = format!("{}/.bs/memory.db", project_path);
     let store = loci_memory::MemoryStore::new(&db).await.map_err(|e| e.to_string())?;
     let mems = store.recall(None, None, None, 20).await.map_err(|e| e.to_string())?;
     Ok(mems.into_iter().map(|m| m.content).collect())
+}
+
+#[tauri::command]
+pub async fn get_default_project_path() -> Result<String, String> {
+    Ok(default_project_path())
 }

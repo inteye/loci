@@ -1,11 +1,36 @@
 import * as cp from 'child_process';
 import * as http from 'http';
 import * as https from 'https';
+import * as path from 'path';
 import * as vscode from 'vscode';
+
+interface ProjectEntry {
+    name: string;
+    path: string;
+}
+
+interface ProjectListResponse {
+    current_path: string;
+    projects: ProjectEntry[];
+}
 
 function serverUrl(): string {
     const cfg = vscode.workspace.getConfiguration('loci');
     return cfg.get('serverUrl', cfg.get('legacyServerUrl', 'http://localhost:3000'));
+}
+
+function workspaceRoot(): string | undefined {
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+}
+
+function normalizeProjectPath(projectPath: string): string {
+    return path.resolve(projectPath);
+}
+
+function projectAlias(projectPath: string): string {
+    const base = path.basename(projectPath) || 'project';
+    const suffix = Buffer.from(projectPath).toString('base64url').slice(0, 10);
+    return `vscode-${base}-${suffix}`;
 }
 
 async function post<T>(path: string, body: object): Promise<T> {
@@ -39,6 +64,24 @@ async function post<T>(path: string, body: object): Promise<T> {
     });
 }
 
+async function get<T>(path: string): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const url = new URL(serverUrl() + path);
+        const lib = url.protocol === 'https:' ? https : http;
+        lib.get(url.toString(), res => {
+            let buf = '';
+            res.on('data', chunk => buf += chunk);
+            res.on('end', () => {
+                try {
+                    resolve(JSON.parse(buf));
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        }).on('error', reject);
+    });
+}
+
 async function checkServer(): Promise<boolean> {
     return new Promise(resolve => {
         const url = new URL(serverUrl() + '/health');
@@ -58,8 +101,9 @@ async function ensureServer(): Promise<boolean> {
     );
     if (choice !== 'Start loci serve') return false;
 
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '.';
-    cp.spawn('loci', ['serve', '-p', workspaceRoot], { detached: true, stdio: 'ignore' }).unref();
+    const root = workspaceRoot();
+    const args = root ? ['serve', '-p', root] : ['serve'];
+    cp.spawn('loci', args, { detached: true, stdio: 'ignore' }).unref();
 
     for (let i = 0; i < 6; i++) {
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -70,8 +114,34 @@ async function ensureServer(): Promise<boolean> {
     return false;
 }
 
+async function syncServerProject(): Promise<boolean> {
+    const root = workspaceRoot();
+    if (!root) return true;
+    const normalizedRoot = normalizeProjectPath(root);
+
+    try {
+        const projects = await get<ProjectListResponse>('/projects');
+        if (normalizeProjectPath(projects.current_path) === normalizedRoot) return true;
+
+        const existing = projects.projects.find(project => normalizeProjectPath(project.path) === normalizedRoot);
+        if (existing) {
+            await post('/projects/use', { name: existing.name });
+            return true;
+        }
+
+        const name = projectAlias(normalizedRoot);
+        await post('/projects/add', { name, path: normalizedRoot });
+        await post('/projects/use', { name });
+        return true;
+    } catch (error) {
+        vscode.window.showErrorMessage(`Could not sync loci project: ${String(error)}`);
+        return false;
+    }
+}
+
 async function cmdAsk() {
     if (!await ensureServer()) return;
+    if (!await syncServerProject()) return;
     const question = await vscode.window.showInputBox({ prompt: 'Ask about the codebase...' });
     if (!question) return;
 
@@ -88,6 +158,7 @@ async function cmdAsk() {
 
 async function cmdExplain() {
     if (!await ensureServer()) return;
+    if (!await syncServerProject()) return;
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
         vscode.window.showWarningMessage('Open a file first');
@@ -112,6 +183,7 @@ async function cmdExplain() {
 
 async function cmdDiff() {
     if (!await ensureServer()) return;
+    if (!await syncServerProject()) return;
     const panel = vscode.window.createWebviewPanel('loci.diff', 'loci Diff', vscode.ViewColumn.Beside, {});
     panel.webview.html = loadingHtml('Analyzing recent changes...');
 
@@ -124,8 +196,8 @@ async function cmdDiff() {
 }
 
 async function cmdIndex() {
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (!workspaceRoot) {
+    const root = workspaceRoot();
+    if (!root) {
         vscode.window.showWarningMessage('No workspace open');
         return;
     }
@@ -133,12 +205,13 @@ async function cmdIndex() {
     vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'loci: Indexing project...' },
         () => new Promise<void>((resolve, reject) => {
-            cp.exec(`loci index "${workspaceRoot}"`, (error, stdout) => {
+            cp.exec(`loci index --path "${root}"`, async (error, stdout) => {
                 if (error) {
                     vscode.window.showErrorMessage(`Index failed: ${error.message}`);
                     reject(error);
                     return;
                 }
+                await syncServerProject();
                 vscode.window.showInformationMessage(`Indexed: ${stdout.trim()}`);
                 resolve();
             });
