@@ -1,7 +1,7 @@
-use std::path::Path;
-use serde::{Deserialize, Serialize};
-use syn::{visit::Visit, ItemFn, ItemStruct, ItemEnum, ItemTrait, ItemImpl, ItemMod};
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+use syn::{visit::Visit, ItemEnum, ItemFn, ItemImpl, ItemMod, ItemStruct, ItemTrait};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedFile {
@@ -78,19 +78,28 @@ struct SymbolVisitor {
 impl<'ast> Visit<'ast> for SymbolVisitor {
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
         let is_async = node.sig.asyncness.is_some();
-        let params: Vec<String> = node.sig.inputs.iter().filter_map(|arg| {
-            if let syn::FnArg::Typed(pat) = arg {
-                if let syn::Pat::Ident(ident) = pat.pat.as_ref() {
-                    return Some(ident.ident.to_string());
+        let params: Vec<String> = node
+            .sig
+            .inputs
+            .iter()
+            .filter_map(|arg| {
+                if let syn::FnArg::Typed(pat) = arg {
+                    if let syn::Pat::Ident(ident) = pat.pat.as_ref() {
+                        return Some(ident.ident.to_string());
+                    }
                 }
-            }
-            None
-        }).collect();
+                None
+            })
+            .collect();
 
         let fn_name = node.sig.ident.to_string();
         self.symbols.push(Symbol {
             name: fn_name.clone(),
-            kind: if is_async { SymbolKind::AsyncFunction } else { SymbolKind::Function },
+            kind: if is_async {
+                SymbolKind::AsyncFunction
+            } else {
+                SymbolKind::Function
+            },
             visibility: vis_to_enum(&node.vis),
             doc_comment: extract_doc_attrs(&node.attrs),
             line: 0,
@@ -159,7 +168,10 @@ impl<'ast> Visit<'ast> for SymbolVisitor {
     fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
         let type_name = type_to_string(&node.self_ty);
         let trait_name = node.trait_.as_ref().map(|(_, path, _)| {
-            path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default()
+            path.segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default()
         });
         let name = match &trait_name {
             Some(t) => format!("impl {} for {}", t, type_name),
@@ -199,24 +211,39 @@ fn vis_to_enum(vis: &syn::Visibility) -> Visibility {
     match vis {
         syn::Visibility::Public(_) => Visibility::Public,
         syn::Visibility::Restricted(r) => {
-            if r.path.is_ident("crate") { Visibility::Crate } else { Visibility::Private }
+            if r.path.is_ident("crate") {
+                Visibility::Crate
+            } else {
+                Visibility::Private
+            }
         }
         syn::Visibility::Inherited => Visibility::Private,
     }
 }
 
 fn extract_doc_attrs(attrs: &[syn::Attribute]) -> Option<String> {
-    let docs: Vec<String> = attrs.iter().filter_map(|attr| {
-        if attr.path().is_ident("doc") {
-            if let syn::Meta::NameValue(nv) = &attr.meta {
-                if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value {
-                    return Some(s.value().trim().to_string());
+    let docs: Vec<String> = attrs
+        .iter()
+        .filter_map(|attr| {
+            if attr.path().is_ident("doc") {
+                if let syn::Meta::NameValue(nv) = &attr.meta {
+                    if let syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(s),
+                        ..
+                    }) = &nv.value
+                    {
+                        return Some(s.value().trim().to_string());
+                    }
                 }
             }
-        }
+            None
+        })
+        .collect();
+    if docs.is_empty() {
         None
-    }).collect();
-    if docs.is_empty() { None } else { Some(docs.join("\n")) }
+    } else {
+        Some(docs.join("\n"))
+    }
 }
 
 fn extract_file_doc(file: &syn::File) -> Option<String> {
@@ -225,7 +252,10 @@ fn extract_file_doc(file: &syn::File) -> Option<String> {
 
 fn type_to_string(ty: &syn::Type) -> String {
     match ty {
-        syn::Type::Path(p) => p.path.segments.last()
+        syn::Type::Path(p) => p
+            .path
+            .segments
+            .last()
             .map(|s| s.ident.to_string())
             .unwrap_or_default(),
         _ => "Unknown".to_string(),

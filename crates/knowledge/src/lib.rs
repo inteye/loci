@@ -1,8 +1,8 @@
-use sqlx::{SqlitePool, Row};
-use uuid::Uuid;
-use chrono::Utc;
 use anyhow::Result;
+use chrono::Utc;
 use loci_core::types::{Knowledge, KnowledgeSource};
+use sqlx::{Row, SqlitePool};
+use uuid::Uuid;
 
 pub struct KnowledgeStore {
     pool: SqlitePool,
@@ -27,15 +27,18 @@ impl KnowledgeStore {
                 tags       TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_knowledge_project ON knowledge(project_id);"
-        ).execute(&self.pool).await?;
+            CREATE INDEX IF NOT EXISTS idx_knowledge_project ON knowledge(project_id);",
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     pub async fn save(&self, k: &Knowledge) -> Result<()> {
-        let blob: Option<Vec<u8>> = k.embedding.as_ref().map(|v| {
-            v.iter().flat_map(|f| f.to_le_bytes()).collect()
-        });
+        let blob: Option<Vec<u8>> = k
+            .embedding
+            .as_ref()
+            .map(|v| v.iter().flat_map(|f| f.to_le_bytes()).collect());
         sqlx::query(
             "INSERT OR REPLACE INTO knowledge (id, source, content, embedding, project_id, tags, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -52,53 +55,85 @@ impl KnowledgeStore {
     }
 
     /// Semantic search — cosine over stored embeddings, falls back to keyword scan
-    pub async fn search(&self, query_embedding: Option<&[f32]>, keyword: Option<&str>, limit: usize) -> Result<Vec<Knowledge>> {
+    pub async fn search(
+        &self,
+        query_embedding: Option<&[f32]>,
+        keyword: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Knowledge>> {
         let rows = sqlx::query(
             "SELECT id, source, content, embedding, project_id, tags, created_at FROM knowledge ORDER BY created_at DESC LIMIT 1000"
         ).fetch_all(&self.pool).await?;
 
-        let mut items: Vec<(Knowledge, f32)> = rows.into_iter().filter_map(|row| {
-            let source: KnowledgeSource = serde_json::from_str(row.get::<&str,_>("source")).ok()?;
-            let tags: Vec<String> = serde_json::from_str(row.get::<&str,_>("tags")).unwrap_or_default();
-            let embedding: Option<Vec<f32>> = row.get::<Option<Vec<u8>>,_>("embedding").map(|b| {
-                b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0],c[1],c[2],c[3]])).collect()
-            });
-            let content: String = row.get("content");
+        let mut items: Vec<(Knowledge, f32)> = rows
+            .into_iter()
+            .filter_map(|row| {
+                let source: KnowledgeSource =
+                    serde_json::from_str(row.get::<&str, _>("source")).ok()?;
+                let tags: Vec<String> =
+                    serde_json::from_str(row.get::<&str, _>("tags")).unwrap_or_default();
+                let embedding: Option<Vec<f32>> =
+                    row.get::<Option<Vec<u8>>, _>("embedding").map(|b| {
+                        b.chunks_exact(4)
+                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect()
+                    });
+                let content: String = row.get("content");
 
-            // keyword filter
-            if let Some(kw) = keyword {
-                if !content.to_lowercase().contains(&kw.to_lowercase()) { return None; }
-            }
+                // keyword filter
+                if let Some(kw) = keyword {
+                    if !content.to_lowercase().contains(&kw.to_lowercase()) {
+                        return None;
+                    }
+                }
 
-            let score = query_embedding
-                .zip(embedding.as_ref())
-                .map(|(q, e)| cosine(q, e))
-                .unwrap_or(0.0);
+                let score = query_embedding
+                    .zip(embedding.as_ref())
+                    .map(|(q, e)| cosine(q, e))
+                    .unwrap_or(0.0);
 
-            let k = Knowledge {
-                id: Uuid::parse_str(row.get("id")).ok()?,
-                source,
-                content,
-                embedding,
-                project_id: row.get::<Option<&str>,_>("project_id").and_then(|s| Uuid::parse_str(s).ok()),
-                tags,
-                created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at")).ok()?.with_timezone(&Utc),
-            };
-            Some((k, score))
-        }).collect();
+                let k = Knowledge {
+                    id: Uuid::parse_str(row.get("id")).ok()?,
+                    source,
+                    content,
+                    embedding,
+                    project_id: row
+                        .get::<Option<&str>, _>("project_id")
+                        .and_then(|s| Uuid::parse_str(s).ok()),
+                    tags,
+                    created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at"))
+                        .ok()?
+                        .with_timezone(&Utc),
+                };
+                Some((k, score))
+            })
+            .collect();
 
         items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        Ok(items.into_iter().take(limit).map(|(k,_)| k).collect())
+        Ok(items.into_iter().take(limit).map(|(k, _)| k).collect())
     }
 
     pub async fn list(&self, limit: usize) -> Result<Vec<Knowledge>> {
         self.search(None, None, limit).await
     }
 
-    pub async fn search_external(&self, query_embedding: Option<&[f32]>, keyword: Option<&str>, limit: usize) -> Result<Vec<Knowledge>> {
-        let items = self.search(query_embedding, keyword, limit.saturating_mul(4).max(20)).await?;
-        Ok(items.into_iter()
-            .filter(|k| matches!(k.source, KnowledgeSource::File { .. } | KnowledgeSource::Url { .. }))
+    pub async fn search_external(
+        &self,
+        query_embedding: Option<&[f32]>,
+        keyword: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Knowledge>> {
+        let items = self
+            .search(query_embedding, keyword, limit.saturating_mul(4).max(20))
+            .await?;
+        Ok(items
+            .into_iter()
+            .filter(|k| {
+                matches!(
+                    k.source,
+                    KnowledgeSource::File { .. } | KnowledgeSource::Url { .. }
+                )
+            })
             .take(limit)
             .collect())
     }
@@ -109,25 +144,39 @@ impl KnowledgeStore {
 
     pub async fn count(&self) -> Result<i64> {
         let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM knowledge")
-            .fetch_one(&self.pool).await?;
+            .fetch_one(&self.pool)
+            .await?;
         Ok(n)
     }
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() { return 0.0; }
-    let dot: f32 = a.iter().zip(b).map(|(x,y)| x*y).sum();
-    let na = a.iter().map(|x| x*x).sum::<f32>().sqrt();
-    let nb = b.iter().map(|x| x*x).sum::<f32>().sqrt();
-    if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na * nb)
+    }
 }
 
 /// Ingest a local file into the knowledge store
-pub async fn ingest_file(store: &KnowledgeStore, path: &std::path::Path, embedding: Option<Vec<f32>>, project_id: Option<Uuid>) -> Result<Knowledge> {
+pub async fn ingest_file(
+    store: &KnowledgeStore,
+    path: &std::path::Path,
+    embedding: Option<Vec<f32>>,
+    project_id: Option<Uuid>,
+) -> Result<Knowledge> {
     let content = std::fs::read_to_string(path)?;
     let k = Knowledge {
         id: Uuid::new_v4(),
-        source: KnowledgeSource::File { path: path.to_string_lossy().to_string() },
+        source: KnowledgeSource::File {
+            path: path.to_string_lossy().to_string(),
+        },
         content,
         embedding,
         project_id,
@@ -139,13 +188,20 @@ pub async fn ingest_file(store: &KnowledgeStore, path: &std::path::Path, embeddi
 }
 
 /// Fetch a URL and ingest its text content
-pub async fn ingest_url(store: &KnowledgeStore, url: &str, embedding: Option<Vec<f32>>, project_id: Option<Uuid>) -> Result<Knowledge> {
+pub async fn ingest_url(
+    store: &KnowledgeStore,
+    url: &str,
+    embedding: Option<Vec<f32>>,
+    project_id: Option<Uuid>,
+) -> Result<Knowledge> {
     let text = reqwest::get(url).await?.text().await?;
     // Strip HTML tags naively
     let content = strip_html(&text);
     let k = Knowledge {
         id: Uuid::new_v4(),
-        source: KnowledgeSource::Url { url: url.to_string() },
+        source: KnowledgeSource::Url {
+            url: url.to_string(),
+        },
         content,
         embedding,
         project_id,

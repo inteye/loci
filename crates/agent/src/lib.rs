@@ -1,14 +1,14 @@
-use std::sync::Arc;
 use loci_core::error::Result;
 use loci_llm::LlmClient;
-use loci_tools::{ToolRegistry, ToolContext};
+use loci_tools::{ToolContext, ToolRegistry};
+use std::sync::Arc;
 
-pub mod planner;
 pub mod executor;
+pub mod planner;
 pub mod trace;
 
-pub use planner::Planner;
 pub use executor::Executor;
+pub use planner::Planner;
 pub use trace::{TraceAgent, TraceEvidence, TraceReport, TraceTimelineEvent};
 
 /// Top-level agent runner: plan → execute → return result

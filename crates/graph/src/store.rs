@@ -1,8 +1,8 @@
-use sqlx::{SqlitePool, Row};
+use crate::graph::{Edge, EdgeKind, KnowledgeGraph, Node, NodeKind};
 use anyhow::Result;
-use uuid::Uuid;
-use crate::graph::{Node, Edge, NodeKind, EdgeKind, KnowledgeGraph};
 use chrono::Utc;
+use sqlx::{Row, SqlitePool};
+use uuid::Uuid;
 
 pub struct GraphStore {
     pub pool: SqlitePool,
@@ -36,8 +36,10 @@ impl GraphStore {
             );
             CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
             CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id);
-            CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id);"
-        ).execute(&self.pool).await?;
+            CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id);",
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -65,22 +67,26 @@ impl GraphStore {
 
     pub async fn save_edge(&self, edge: &Edge) -> Result<()> {
         sqlx::query(
-            "INSERT OR REPLACE INTO edges (id, from_id, to_id, kind, label) VALUES (?, ?, ?, ?, ?)"
+            "INSERT OR REPLACE INTO edges (id, from_id, to_id, kind, label) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(edge.id.to_string())
         .bind(edge.from.to_string())
         .bind(edge.to.to_string())
         .bind(serde_json::to_string(&edge.kind)?)
         .bind(&edge.label)
-        .execute(&self.pool).await?;
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     pub async fn load_graph(&self) -> Result<KnowledgeGraph> {
         let mut graph = KnowledgeGraph::default();
 
-        let rows = sqlx::query("SELECT id, kind, name, file_path, description, raw_source, created_at FROM nodes")
-            .fetch_all(&self.pool).await?;
+        let rows = sqlx::query(
+            "SELECT id, kind, name, file_path, description, raw_source, created_at FROM nodes",
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         for row in rows {
             let kind: NodeKind = serde_json::from_str(row.get::<&str, _>("kind"))?;
@@ -98,7 +104,8 @@ impl GraphStore {
         }
 
         let rows = sqlx::query("SELECT id, from_id, to_id, kind, label FROM edges")
-            .fetch_all(&self.pool).await?;
+            .fetch_all(&self.pool)
+            .await?;
 
         for row in rows {
             let kind: EdgeKind = serde_json::from_str(row.get::<&str, _>("kind"))?;
@@ -118,7 +125,8 @@ impl GraphStore {
         sqlx::query("UPDATE nodes SET description = ? WHERE id = ?")
             .bind(description)
             .bind(id.to_string())
-            .execute(&self.pool).await?;
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 }

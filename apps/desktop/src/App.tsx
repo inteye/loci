@@ -7,6 +7,7 @@ type Panel = 'chat' | 'settings' | 'trace' | 'docs' | 'eval' | 'graph' | 'memory
 type Operation = 'project' | 'index' | 'ask' | 'settings' | 'trace' | 'docs' | 'eval' | 'graph' | 'memory'
 type AsyncState = 'idle' | 'loading' | 'success' | 'error'
 type ProviderProtocol = 'openai' | 'litellm' | 'anthropic'
+type BuiltInProviderId = 'openai' | 'anthropic' | 'ollama' | 'qwen_coding_plan' | 'litellm' | 'custom'
 
 interface GraphNode {
   id: string
@@ -65,6 +66,7 @@ interface ProviderSettingsData {
   api_key: string
   api_key_env: string
   model: string
+  preset?: BuiltInProviderId
 }
 
 interface ModelSettingsData {
@@ -134,6 +136,74 @@ const suggestedQuestions = [
   '如果我是新同事，应该先看哪几个文件？',
 ]
 
+const builtInProviders: Array<{
+  id: Exclude<BuiltInProviderId, 'custom'>
+  label: string
+  description: string
+  protocol: ProviderProtocol
+  base_url: string
+  model: string
+  api_key_env: string
+  api_key: string
+  requiresApiKey: boolean
+}> = [
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    description: '官方 OpenAI 服务。内置协议和默认地址，通常只需要填写 API Key。',
+    protocol: 'openai',
+    base_url: '',
+    model: 'gpt-4o-mini',
+    api_key_env: 'OPENAI_API_KEY',
+    api_key: '',
+    requiresApiKey: true,
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic',
+    description: '官方 Anthropic Messages API。内置协议和默认地址，通常只需要填写 API Key。',
+    protocol: 'anthropic',
+    base_url: 'https://api.anthropic.com/v1',
+    model: 'claude-3-7-sonnet-latest',
+    api_key_env: 'ANTHROPIC_API_KEY',
+    api_key: '',
+    requiresApiKey: true,
+  },
+  {
+    id: 'ollama',
+    label: 'Ollama',
+    description: '本地 Ollama 服务。默认直连本机地址，不需要额外 API Key。',
+    protocol: 'openai',
+    base_url: 'http://localhost:11434/v1',
+    model: 'qwen2.5-coder:7b',
+    api_key_env: '',
+    api_key: 'ollama',
+    requiresApiKey: false,
+  },
+  {
+    id: 'qwen_coding_plan',
+    label: 'Qwen Coding Plan',
+    description: '内置 Qwen 编码模型入口，默认按 OpenAI 兼容接口接入，只需要填写 API Key。',
+    protocol: 'openai',
+    base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen-plus',
+    api_key_env: 'DASHSCOPE_API_KEY',
+    api_key: '',
+    requiresApiKey: true,
+  },
+  {
+    id: 'litellm',
+    label: 'litellm-rs Gateway',
+    description: '推荐模式。基于 litellm-rs 统一管理多模型，loci 只连接一个 OpenAI 兼容网关地址。',
+    protocol: 'litellm',
+    base_url: 'http://localhost:4000/v1',
+    model: 'gpt-4o-mini',
+    api_key_env: 'LITELLM_API_KEY',
+    api_key: '',
+    requiresApiKey: true,
+  },
+]
+
 const protocolOptions: Array<{ value: ProviderProtocol; label: string; helper: string }> = [
   {
     value: 'openai',
@@ -142,8 +212,8 @@ const protocolOptions: Array<{ value: ProviderProtocol; label: string; helper: s
   },
   {
     value: 'litellm',
-    label: 'LiteLLM 网关',
-    helper: '推荐生产接入方式。通过 LiteLLM 统一接入多模型，再由 loci 只对接一个 OpenAI 兼容网关地址。',
+    label: 'litellm-rs 网关',
+    helper: '推荐生产接入方式。通过 litellm-rs 统一接入多模型，再由 loci 只对接一个 OpenAI 兼容网关地址。',
   },
   {
     value: 'anthropic',
@@ -160,7 +230,41 @@ function emptyProvider(index: number): ProviderSettingsData {
     api_key: '',
     api_key_env: '',
     model: '',
+    preset: 'custom',
   }
+}
+
+function inferPreset(provider: ProviderSettingsData): BuiltInProviderId {
+  if (provider.name === 'openai') return 'openai'
+  if (provider.name === 'anthropic') return 'anthropic'
+  if (provider.name === 'ollama') return 'ollama'
+  if (provider.name === 'qwen_coding_plan') return 'qwen_coding_plan'
+  if (provider.name === 'litellm' || provider.protocol === 'litellm') return 'litellm'
+  return 'custom'
+}
+
+function createBuiltInProvider(id: Exclude<BuiltInProviderId, 'custom'>): ProviderSettingsData {
+  const preset = builtInProviders.find((item) => item.id === id)!
+  return {
+    name: preset.id,
+    protocol: preset.protocol,
+    base_url: preset.base_url,
+    api_key: preset.api_key,
+    api_key_env: preset.api_key_env,
+    model: preset.model,
+    preset: preset.id,
+  }
+}
+
+function builtInLabel(provider: ProviderSettingsData): string {
+  if (provider.preset && provider.preset !== 'custom') {
+    return builtInProviders.find((item) => item.id === provider.preset)?.label ?? provider.name
+  }
+  return provider.name || '自定义 provider'
+}
+
+function isBuiltInProvider(provider: ProviderSettingsData): boolean {
+  return Boolean(provider.preset && provider.preset !== 'custom')
 }
 
 function makeMessage(role: ChatMessage['role'], content: string, title?: string): ChatMessage {
@@ -332,7 +436,10 @@ export default function App() {
       const data = await invoke<ModelSettingsData>('get_model_settings', { projectPath })
       setSettings({
         ...data,
-        providers: data.providers.length > 0 ? data.providers : [emptyProvider(0)],
+        providers: (data.providers.length > 0 ? data.providers : [emptyProvider(0)]).map((provider) => ({
+          ...provider,
+          preset: inferPreset(provider),
+        })),
       })
       updateStatus('settings', 'success', `已加载 ${data.providers.length} 个模型配置。`)
     } catch (error) {
@@ -408,7 +515,29 @@ export default function App() {
     updateStatus('settings', 'idle', '模型设置已修改，记得保存。')
   }
 
-  function addProvider() {
+  function addBuiltInProvider(id: Exclude<BuiltInProviderId, 'custom'>) {
+    setSettings((prev) => {
+      const next = prev ?? {
+        config_path: `${projectPath}/.bs/config.toml`,
+        default_provider: null,
+        providers: [],
+      }
+      const provider = createBuiltInProvider(id)
+      const existingIndex = next.providers.findIndex((item) => item.name === provider.name)
+      const providers = existingIndex >= 0
+        ? next.providers.map((item, index) => index === existingIndex ? { ...item, ...provider } : item)
+        : [...next.providers, provider]
+      return {
+        ...next,
+        providers,
+        default_provider: next.default_provider ?? providers[0]?.name ?? null,
+      }
+    })
+    setSettingsExpanded(true)
+    updateStatus('settings', 'idle', `已加入 ${builtInProviders.find((item) => item.id === id)?.label}，填写后记得保存。`)
+  }
+
+  function addCustomProvider() {
     setSettings((prev) => {
       const next = prev ?? {
         config_path: `${projectPath}/.bs/config.toml`,
@@ -423,7 +552,7 @@ export default function App() {
       }
     })
     setSettingsExpanded(true)
-    updateStatus('settings', 'idle', '已新增一个模型配置项，填写后记得保存。')
+    updateStatus('settings', 'idle', '已新增自定义 provider，填写协议、接口地址和 API Key 后记得保存。')
   }
 
   function removeProvider(index: number) {
@@ -595,8 +724,8 @@ export default function App() {
 
           {settingsExpanded && (
             <div className="settings-rail-body">
-                <div className="settings-rail-toolbar">
-                <p>这里是最常用的模型配置入口。推荐优先使用 LiteLLM 网关，设置保存后通常不需要频繁改动，所以默认支持收起。</p>
+              <div className="settings-rail-toolbar">
+                <p>先从内置服务商里启用一个 provider。OpenAI、Anthropic、Ollama、Qwen Coding Plan、LiteLLM 都可以一键加入；只有自定义 provider 才需要填写协议和接口地址。</p>
                 <div className="settings-rail-actions">
                   <button type="button" className="secondary-button" onClick={() => loadSettings()} disabled={disabled}>
                     {statuses.settings.state === 'loading' ? '读取中...' : '重新读取'}
@@ -613,6 +742,38 @@ export default function App() {
               <PanelState status={statuses.settings} empty={!settings}>
                 {settings ? (
                   <div className="settings-rail-grid">
+                    <div className="settings-card settings-catalog-card">
+                      <div className="settings-card-header">
+                        <div>
+                          <strong>内置服务商</strong>
+                          <p>内置项已经带好协议、默认地址和推荐模型，通常只需要补 API Key。</p>
+                        </div>
+                      </div>
+                      <div className="provider-catalog">
+                        {builtInProviders.map((preset) => (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            className="provider-preset-card"
+                            onClick={() => addBuiltInProvider(preset.id)}
+                          >
+                            <strong>{preset.label}</strong>
+                            <span>{preset.description}</span>
+                            <small>{preset.protocol} / {preset.model}</small>
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          className="provider-preset-card custom"
+                          onClick={addCustomProvider}
+                        >
+                          <strong>自定义 Provider</strong>
+                          <span>用于接入通用 OpenAI 类或 Anthropic 类协议的服务。</span>
+                          <small>需填写协议、接口地址、模型和 API Key</small>
+                        </button>
+                      </div>
+                    </div>
+
                     <div className="settings-card">
                       <label htmlFor="rail-default-provider">默认 provider</label>
                       <select
@@ -625,7 +786,7 @@ export default function App() {
                       >
                         {settings.providers.map((provider) => (
                           <option key={provider.name} value={provider.name}>
-                            {provider.name || '未命名 provider'}
+                            {builtInLabel(provider)}
                           </option>
                         ))}
                       </select>
@@ -638,9 +799,6 @@ export default function App() {
                           <strong>配置摘要</strong>
                           <p>{settings.config_path}</p>
                         </div>
-                        <button type="button" className="ghost-button" onClick={addProvider} disabled={disabled}>
-                          新增 provider
-                        </button>
                       </div>
                       {settingsTestResult ? <div className="settings-test-result">{settingsTestResult}</div> : null}
                       <div className="provider-summary-list">
@@ -651,8 +809,8 @@ export default function App() {
                             className="provider-summary-chip"
                             onClick={() => setPanel('settings')}
                           >
-                            <span>{provider.name || `provider-${index + 1}`}</span>
-                            <small>{provider.protocol} / {provider.model || '未设置模型'}</small>
+                            <span>{builtInLabel(provider)}</span>
+                            <small>{provider.preset === 'custom' ? 'custom' : 'built-in'} / {provider.model || '未设置模型'}</small>
                           </button>
                         ))}
                       </div>
@@ -723,7 +881,7 @@ export default function App() {
                 <div className="toolbar">
                   <div className="toolbar-copy">
                     <strong>完整模型设置</strong>
-                    <p>这里编辑的是当前项目的 `.bs/config.toml`。完整表单适合首次配置或调整多个 provider。</p>
+                    <p>这里编辑的是当前项目的 `.bs/config.toml`。内置服务商默认只需要填写 API Key；自定义 provider 才需要填写协议和接口地址。</p>
                   </div>
                   <div className="toolbar-actions">
                     <button type="button" className="secondary-button" onClick={() => loadSettings()} disabled={disabled}>
@@ -732,8 +890,8 @@ export default function App() {
                     <button type="button" className="secondary-button" onClick={() => testSettingsConnection(settings?.default_provider)} disabled={disabled}>
                       {statuses.settings.state === 'loading' ? '测试中...' : '测试默认连接'}
                     </button>
-                    <button type="button" className="secondary-button" onClick={addProvider} disabled={disabled}>
-                      新增 provider
+                    <button type="button" className="secondary-button" onClick={addCustomProvider} disabled={disabled}>
+                      新增自定义 provider
                     </button>
                     <button type="button" className="primary-button" onClick={() => saveSettings()} disabled={disabled}>
                       {statuses.settings.state === 'loading' ? '保存中...' : '保存设置'}
@@ -759,8 +917,12 @@ export default function App() {
                         <div key={`${provider.name}-${index}`} className="settings-card">
                           <div className="settings-card-header">
                             <div>
-                              <strong>{provider.name || `模型配置 ${index + 1}`}</strong>
-                              <p>为当前项目配置一个可直接调用的模型服务。</p>
+                              <strong>{builtInLabel(provider) || `模型配置 ${index + 1}`}</strong>
+                              <p>
+                                {isBuiltInProvider(provider)
+                                  ? '内置服务商已带好协议和默认地址，通常只需要填写 API Key。'
+                                  : '自定义 provider 需要手动填写协议、接口地址、模型和 API Key。'}
+                              </p>
                             </div>
                             <button type="button" className="ghost-button" onClick={() => removeProvider(index)} disabled={disabled}>
                               删除
@@ -768,68 +930,92 @@ export default function App() {
                           </div>
 
                           <div className="settings-grid">
-                            <div className="field-group">
-                              <label>显示名称</label>
-                              <input
-                                value={provider.name}
-                                onChange={(event) => updateProvider(index, 'name', event.target.value)}
-                                placeholder="例如 openai / claude / local-dev"
-                              />
-                            </div>
+                            {provider.preset === 'custom' ? (
+                              <>
+                                <div className="field-group">
+                                  <label>显示名称</label>
+                                  <input
+                                    value={provider.name}
+                                    onChange={(event) => updateProvider(index, 'name', event.target.value)}
+                                    placeholder="例如 openai-proxy / claude-gateway / local-dev"
+                                  />
+                                </div>
 
-                            <div className="field-group">
-                              <label>协议类型</label>
-                              <select
-                                value={provider.protocol}
-                                onChange={(event) => updateProvider(index, 'protocol', event.target.value)}
-                              >
-                                {protocolOptions.map((option) => (
-                                  <option key={option.value} value={option.value}>
-                                    {option.label}
-                                  </option>
-                                ))}
-                              </select>
-                              <p>{protocolOptions.find((option) => option.value === provider.protocol)?.helper}</p>
-                            </div>
+                                <div className="field-group">
+                                  <label>协议类型</label>
+                                  <select
+                                    value={provider.protocol}
+                                    onChange={(event) => updateProvider(index, 'protocol', event.target.value)}
+                                  >
+                                    {protocolOptions.filter((option) => option.value !== 'litellm').map((option) => (
+                                      <option key={option.value} value={option.value}>
+                                        {option.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <p>{protocolOptions.find((option) => option.value === provider.protocol)?.helper}</p>
+                                </div>
 
-                            <div className="field-group span-2">
-                              <label>Base URL</label>
-                              <input
-                                value={provider.base_url}
-                                onChange={(event) => updateProvider(index, 'base_url', event.target.value)}
-                                placeholder={provider.protocol === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1'}
-                              />
-                              <p>留空会使用协议默认地址。Anthropic 协议会自动补 `/messages`。</p>
-                            </div>
+                                <div className="field-group span-2">
+                                  <label>接口地址</label>
+                                  <input
+                                    value={provider.base_url}
+                                    onChange={(event) => updateProvider(index, 'base_url', event.target.value)}
+                                    placeholder={provider.protocol === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1'}
+                                  />
+                                  <p>自定义 provider 必须填写接口地址。Anthropic 协议会自动补 `/messages`。</p>
+                                </div>
 
-                            <div className="field-group span-2">
-                              <label>模型名</label>
-                              <input
-                                value={provider.model}
-                                onChange={(event) => updateProvider(index, 'model', event.target.value)}
-                                placeholder={provider.protocol === 'anthropic' ? 'claude-3-7-sonnet-latest' : 'gpt-4o-mini'}
-                              />
-                            </div>
+                                <div className="field-group span-2">
+                                  <label>模型名</label>
+                                  <input
+                                    value={provider.model}
+                                    onChange={(event) => updateProvider(index, 'model', event.target.value)}
+                                    placeholder={provider.protocol === 'anthropic' ? 'claude-3-7-sonnet-latest' : 'gpt-4o-mini'}
+                                  />
+                                </div>
 
-                            <div className="field-group">
-                              <label>API Key</label>
-                              <input
-                                type="password"
-                                value={provider.api_key}
-                                onChange={(event) => updateProvider(index, 'api_key', event.target.value)}
-                                placeholder="可直接填写密钥"
-                              />
-                            </div>
+                                <div className="field-group span-2">
+                                  <label>API Key</label>
+                                  <input
+                                    type="password"
+                                    value={provider.api_key}
+                                    onChange={(event) => updateProvider(index, 'api_key', event.target.value)}
+                                    placeholder="填写可直接访问该服务的 API Key"
+                                  />
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div className="field-group span-2">
+                                  <label>接口信息</label>
+                                  <div className="provider-readonly-block">
+                                    <div><strong>协议</strong><span>{protocolOptions.find((option) => option.value === provider.protocol)?.label}</span></div>
+                                    <div><strong>地址</strong><span>{provider.base_url || '使用协议默认地址'}</span></div>
+                                    <div><strong>模型</strong><span>{provider.model}</span></div>
+                                  </div>
+                                </div>
 
-                            <div className="field-group">
-                              <label>API Key 环境变量</label>
-                              <input
-                                value={provider.api_key_env}
-                                onChange={(event) => updateProvider(index, 'api_key_env', event.target.value)}
-                                placeholder={provider.protocol === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'}
-                              />
-                              <p>建议优先使用环境变量。直接写入 API Key 只适合本机临时调试。</p>
-                            </div>
+                                {provider.name !== 'ollama' ? (
+                                  <div className="field-group span-2">
+                                    <label>API Key</label>
+                                    <input
+                                      type="password"
+                                      value={provider.api_key}
+                                      onChange={(event) => updateProvider(index, 'api_key', event.target.value)}
+                                      placeholder={`填写 ${builtInLabel(provider)} 的 API Key`}
+                                    />
+                                  </div>
+                                ) : (
+                                  <div className="field-group span-2">
+                                    <label>本地服务说明</label>
+                                    <div className="provider-readonly-block">
+                                      <div><strong>认证</strong><span>Ollama 默认不需要额外 API Key，系统会自动使用内置占位值。</span></div>
+                                    </div>
+                                  </div>
+                                )}
+                              </>
+                            )}
 
                             <div className="field-group span-2">
                               <label>是否作为默认 provider</label>

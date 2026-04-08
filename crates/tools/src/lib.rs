@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use serde_json::Value;
 use loci_core::error::Result;
+use serde_json::Value;
 
 /// Every tool must implement this trait.
 /// The description is what the LLM sees — write it carefully.
@@ -31,7 +31,10 @@ impl ToolRegistry {
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools.iter().find(|t| t.name() == name).map(|t| t.as_ref())
+        self.tools
+            .iter()
+            .find(|t| t.name() == name)
+            .map(|t| t.as_ref())
     }
 
     pub fn all(&self) -> &[Box<dyn Tool>] {
@@ -39,8 +42,8 @@ impl ToolRegistry {
     }
 }
 
-pub mod shell;
 pub mod file;
+pub mod http;
 pub mod knowledge_search;
 pub mod memory_recall;
-pub mod http;
+pub mod shell;

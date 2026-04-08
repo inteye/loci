@@ -69,14 +69,28 @@ impl TraceAgent {
         Self { llm }
     }
 
-    pub async fn explain_file(&self, repo_path: &Path, file_path: &str, code: &str) -> Result<TraceReport> {
+    pub async fn explain_file(
+        &self,
+        repo_path: &Path,
+        file_path: &str,
+        code: &str,
+    ) -> Result<TraceReport> {
         let history = GitHistory::file_history(repo_path, file_path, 6)?;
         let stable_timeline = build_commit_timeline(&history.commits);
-        let timeline = history.commits.iter()
-            .map(|c| format!("- {} [{}] {} — {}", c.timestamp, c.hash, c.message, c.author))
+        let timeline = history
+            .commits
+            .iter()
+            .map(|c| {
+                format!(
+                    "- {} [{}] {} — {}",
+                    c.timestamp, c.hash, c.message, c.author
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
-        let blame = history.blame_summary.iter()
+        let blame = history
+            .blame_summary
+            .iter()
             .map(|(hash, line)| format!("- [{}] {}", hash, line))
             .collect::<Vec<_>>()
             .join("\n");
@@ -121,21 +135,31 @@ impl TraceAgent {
     }
 
     async fn run_report_prompt(&self, prompt: String) -> Result<TraceReport> {
-        let response = self.llm.chat(
-            vec![
-                Message { role: Role::System, content: "You produce strict JSON trace reports.".to_string() },
-                Message { role: Role::User, content: prompt },
-            ],
-            None,
-        ).await?;
+        let response = self
+            .llm
+            .chat(
+                vec![
+                    Message {
+                        role: Role::System,
+                        content: "You produce strict JSON trace reports.".to_string(),
+                    },
+                    Message {
+                        role: Role::User,
+                        content: prompt,
+                    },
+                ],
+                None,
+            )
+            .await?;
 
         match response {
             LlmResponse::Text(text) => {
-                let parsed = serde_json::from_str::<TraceReport>(&text).unwrap_or_else(|_| TraceReport {
-                    summary: text.trim().to_string(),
-                    confidence: "low".to_string(),
-                    ..Default::default()
-                });
+                let parsed =
+                    serde_json::from_str::<TraceReport>(&text).unwrap_or_else(|_| TraceReport {
+                        summary: text.trim().to_string(),
+                        confidence: "low".to_string(),
+                        ..Default::default()
+                    });
                 Ok(parsed)
             }
             _ => Ok(TraceReport {
@@ -150,19 +174,23 @@ impl TraceAgent {
 fn build_commit_timeline(commits: &[Commit]) -> Vec<TraceTimelineEvent> {
     let mut events = Vec::new();
     for commit in commits.iter().rev() {
-        let when = Utc.timestamp_opt(commit.timestamp, 0)
+        let when = Utc
+            .timestamp_opt(commit.timestamp, 0)
             .single()
             .map(|dt| dt.format("%Y-%m-%d").to_string())
             .unwrap_or_else(|| commit.timestamp.to_string());
         let change = format!("{} [{}] by {}", commit.message, commit.hash, commit.author);
 
-        let should_merge = events.last_mut().map(|last: &mut TraceTimelineEvent| {
-            if last.when == when && last.change == change {
-                true
-            } else {
-                false
-            }
-        }).unwrap_or(false);
+        let should_merge = events
+            .last_mut()
+            .map(|last: &mut TraceTimelineEvent| {
+                if last.when == when && last.change == change {
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
 
         if !should_merge {
             events.push(TraceTimelineEvent { when, change });
@@ -172,8 +200,12 @@ fn build_commit_timeline(commits: &[Commit]) -> Vec<TraceTimelineEvent> {
 }
 
 fn build_diff_timeline(commit_ref: &str, diff: &str) -> Vec<TraceTimelineEvent> {
-    let files_changed = diff.lines()
-        .filter_map(|line| line.strip_prefix("+++ b/").or_else(|| line.strip_prefix("--- a/")))
+    let files_changed = diff
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("+++ b/")
+                .or_else(|| line.strip_prefix("--- a/"))
+        })
         .filter(|line| *line != "/dev/null")
         .map(|line| line.to_string())
         .collect::<Vec<_>>();
@@ -190,9 +222,14 @@ fn build_diff_timeline(commit_ref: &str, diff: &str) -> Vec<TraceTimelineEvent> 
     }]
 }
 
-fn merge_timeline(mut stable: Vec<TraceTimelineEvent>, inferred: Vec<TraceTimelineEvent>) -> Vec<TraceTimelineEvent> {
+fn merge_timeline(
+    mut stable: Vec<TraceTimelineEvent>,
+    inferred: Vec<TraceTimelineEvent>,
+) -> Vec<TraceTimelineEvent> {
     for event in inferred {
-        let exists = stable.iter().any(|existing| existing.when == event.when && existing.change == event.change);
+        let exists = stable
+            .iter()
+            .any(|existing| existing.when == event.when && existing.change == event.change);
         if !exists {
             stable.push(event);
         }
@@ -202,7 +239,10 @@ fn merge_timeline(mut stable: Vec<TraceTimelineEvent>, inferred: Vec<TraceTimeli
 
 #[cfg(test)]
 mod tests {
-    use super::{build_commit_timeline, build_diff_timeline, merge_timeline, TraceEvidence, TraceReport, TraceTimelineEvent};
+    use super::{
+        build_commit_timeline, build_diff_timeline, merge_timeline, TraceEvidence, TraceReport,
+        TraceTimelineEvent,
+    };
     use loci_codebase::Commit;
 
     #[test]
@@ -256,10 +296,19 @@ mod tests {
     #[test]
     fn merge_timeline_keeps_stable_items_and_adds_new_inferred_items() {
         let merged = merge_timeline(
-            vec![TraceTimelineEvent { when: "2026-04-01".to_string(), change: "base".to_string() }],
+            vec![TraceTimelineEvent {
+                when: "2026-04-01".to_string(),
+                change: "base".to_string(),
+            }],
             vec![
-                TraceTimelineEvent { when: "2026-04-01".to_string(), change: "base".to_string() },
-                TraceTimelineEvent { when: "2026-04-02".to_string(), change: "extra".to_string() },
+                TraceTimelineEvent {
+                    when: "2026-04-01".to_string(),
+                    change: "base".to_string(),
+                },
+                TraceTimelineEvent {
+                    when: "2026-04-02".to_string(),
+                    change: "extra".to_string(),
+                },
             ],
         );
 
@@ -270,7 +319,10 @@ mod tests {
 
     #[test]
     fn diff_timeline_mentions_changed_files() {
-        let timeline = build_diff_timeline("HEAD", "--- a/foo.rs\n+++ b/foo.rs\n--- a/bar.rs\n+++ b/bar.rs");
+        let timeline = build_diff_timeline(
+            "HEAD",
+            "--- a/foo.rs\n+++ b/foo.rs\n--- a/bar.rs\n+++ b/bar.rs",
+        );
         assert_eq!(timeline.len(), 1);
         assert!(timeline[0].change.contains("foo.rs"));
         assert!(timeline[0].change.contains("bar.rs"));

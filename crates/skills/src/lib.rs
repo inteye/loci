@@ -1,7 +1,7 @@
+use anyhow::Result;
 /// Skills are higher-level capabilities built on top of Tools + LLM.
 /// Each Skill encapsulates a complete workflow (prompt template + tool calls + output format).
 use async_trait::async_trait;
-use anyhow::Result;
 use loci_llm::LlmClient;
 use loci_tools::ToolContext;
 
@@ -43,9 +43,15 @@ impl SkillRegistry {
         self.skills.push(Box::new(skill));
     }
     pub fn get(&self, name: &str) -> Option<&dyn Skill> {
-        self.skills.iter().find(|s| s.name() == name).map(|s| s.as_ref())
+        self.skills
+            .iter()
+            .find(|s| s.name() == name)
+            .map(|s| s.as_ref())
     }
     pub fn list(&self) -> Vec<(&str, &str)> {
-        self.skills.iter().map(|s| (s.name(), s.description())).collect()
+        self.skills
+            .iter()
+            .map(|s| (s.name(), s.description()))
+            .collect()
     }
 }

@@ -1,23 +1,37 @@
+use crate::{Tool, ToolContext};
 use async_trait::async_trait;
+use loci_core::error::{AppError, Result};
 use serde_json::{json, Value};
 use tokio::process::Command;
-use loci_core::error::{AppError, Result};
-use crate::{Tool, ToolContext};
 
 /// Patterns that require explicit confirmation before execution
 const DANGEROUS_PATTERNS: &[&str] = &[
-    "rm ", "rm\t", "rmdir", "dd ", "mkfs", "format",
-    "DROP ", "DELETE FROM", "TRUNCATE",
-    "shutdown", "reboot", "halt", "poweroff",
-    "chmod 777", "chmod -R 777",
-    "> /dev/", "| sudo",
+    "rm ",
+    "rm\t",
+    "rmdir",
+    "dd ",
+    "mkfs",
+    "format",
+    "DROP ",
+    "DELETE FROM",
+    "TRUNCATE",
+    "shutdown",
+    "reboot",
+    "halt",
+    "poweroff",
+    "chmod 777",
+    "chmod -R 777",
+    "> /dev/",
+    "| sudo",
 ];
 
 pub struct ShellExec;
 
 #[async_trait]
 impl Tool for ShellExec {
-    fn name(&self) -> &str { "shell_exec" }
+    fn name(&self) -> &str {
+        "shell_exec"
+    }
 
     fn description(&self) -> &str {
         "Execute a shell command and return stdout/stderr. \
@@ -38,13 +52,16 @@ impl Tool for ShellExec {
     }
 
     async fn execute(&self, params: Value, ctx: &ToolContext) -> Result<Value> {
-        let cmd = params["command"].as_str()
+        let cmd = params["command"]
+            .as_str()
             .ok_or_else(|| AppError::Tool("missing command".into()))?;
         let confirmed = params["confirmed"].as_bool().unwrap_or(false);
 
         // Safety check
         let cmd_upper = cmd.to_uppercase();
-        let dangerous = DANGEROUS_PATTERNS.iter().any(|p| cmd_upper.contains(&p.to_uppercase()));
+        let dangerous = DANGEROUS_PATTERNS
+            .iter()
+            .any(|p| cmd_upper.contains(&p.to_uppercase()));
         if dangerous && !confirmed {
             return Ok(json!({
                 "blocked": true,
@@ -57,21 +74,28 @@ impl Tool for ShellExec {
         let log_entry = format!("[{}] EXEC: {}\n", chrono::Utc::now().to_rfc3339(), cmd);
         if let Some(dir) = &ctx.working_dir {
             let log_path = std::path::Path::new(dir).join(".bs/audit.log");
-            let _ = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)
-                .map(|mut f| { use std::io::Write; let _ = f.write_all(log_entry.as_bytes()); });
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .map(|mut f| {
+                    use std::io::Write;
+                    let _ = f.write_all(log_entry.as_bytes());
+                });
         }
 
         let timeout = params["timeout_secs"].as_u64().unwrap_or(30);
         let mut builder = Command::new("sh");
         builder.arg("-c").arg(cmd);
-        if let Some(dir) = &ctx.working_dir { builder.current_dir(dir); }
+        if let Some(dir) = &ctx.working_dir {
+            builder.current_dir(dir);
+        }
 
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout),
-            builder.output()
-        ).await
-            .map_err(|_| AppError::Tool(format!("command timed out after {}s", timeout)))?
-            .map_err(|e| AppError::Tool(e.to_string()))?;
+        let output =
+            tokio::time::timeout(std::time::Duration::from_secs(timeout), builder.output())
+                .await
+                .map_err(|_| AppError::Tool(format!("command timed out after {}s", timeout)))?
+                .map_err(|e| AppError::Tool(e.to_string()))?;
 
         Ok(json!({
             "stdout": String::from_utf8_lossy(&output.stdout),

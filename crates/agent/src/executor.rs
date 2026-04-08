@@ -1,8 +1,11 @@
-use std::sync::Arc;
-use std::collections::HashMap;
-use loci_core::{types::*, error::{AppError, Result}};
+use loci_core::{
+    error::{AppError, Result},
+    types::*,
+};
 use loci_llm::{LlmClient, LlmResponse, ToolDef};
-use loci_tools::{ToolRegistry, ToolContext};
+use loci_tools::{ToolContext, ToolRegistry};
+use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct Executor {
@@ -20,15 +23,20 @@ impl Executor {
 
         // Simple topological execution (no parallelism yet — add tokio::spawn later)
         loop {
-            let ready: Vec<usize> = plan.tasks.iter().enumerate()
+            let ready: Vec<usize> = plan
+                .tasks
+                .iter()
+                .enumerate()
                 .filter(|(_, t)| {
-                    t.status == TaskStatus::Pending &&
-                    t.depends_on.iter().all(|dep| results.contains_key(dep))
+                    t.status == TaskStatus::Pending
+                        && t.depends_on.iter().all(|dep| results.contains_key(dep))
                 })
                 .map(|(i, _)| i)
                 .collect();
 
-            if ready.is_empty() { break; }
+            if ready.is_empty() {
+                break;
+            }
 
             for idx in ready {
                 let task = &mut plan.tasks[idx];
@@ -49,7 +57,9 @@ impl Executor {
         }
 
         // Aggregate: return last done task's result or summarize
-        let summary = plan.tasks.iter()
+        let summary = plan
+            .tasks
+            .iter()
             .filter_map(|t| t.result.as_deref())
             .collect::<Vec<_>>()
             .join("\n\n");
@@ -64,7 +74,9 @@ impl Executor {
         ctx: &ToolContext,
     ) -> Result<String> {
         // Build tool defs for this task's allowed tools
-        let tool_defs: Vec<ToolDef> = task.tools.iter()
+        let tool_defs: Vec<ToolDef> = task
+            .tools
+            .iter()
             .filter_map(|name| self.tools.get(name))
             .map(|t| ToolDef {
                 name: t.name().to_string(),
@@ -74,7 +86,8 @@ impl Executor {
             .collect();
 
         // Inject prior results as context
-        let context_str = prior_results.values()
+        let context_str = prior_results
+            .values()
             .map(|s| s.as_str())
             .collect::<Vec<_>>()
             .join("\n");
@@ -85,12 +98,21 @@ impl Executor {
         let user = if context_str.is_empty() {
             task.goal.clone()
         } else {
-            format!("Context from previous tasks:\n{context_str}\n\nTask: {}", task.goal)
+            format!(
+                "Context from previous tasks:\n{context_str}\n\nTask: {}",
+                task.goal
+            )
         };
 
         let messages = vec![
-            Message { role: Role::System, content: system.to_string() },
-            Message { role: Role::User, content: user },
+            Message {
+                role: Role::System,
+                content: system.to_string(),
+            },
+            Message {
+                role: Role::User,
+                content: user,
+            },
         ];
 
         // Agentic loop: keep calling until no more tool calls
@@ -100,12 +122,20 @@ impl Executor {
             match resp {
                 LlmResponse::Text(t) => return Ok(t),
                 LlmResponse::ToolCall { name, arguments } => {
-                    let tool = self.tools.get(&name)
+                    let tool = self
+                        .tools
+                        .get(&name)
                         .ok_or_else(|| AppError::Tool(format!("unknown tool: {name}")))?;
                     let result = tool.execute(arguments.clone(), ctx).await?;
                     // Feed result back into conversation
-                    msgs.push(Message { role: Role::Assistant, content: format!("Calling {name}") });
-                    msgs.push(Message { role: Role::Tool, content: result.to_string() });
+                    msgs.push(Message {
+                        role: Role::Assistant,
+                        content: format!("Calling {name}"),
+                    });
+                    msgs.push(Message {
+                        role: Role::Tool,
+                        content: result.to_string(),
+                    });
                 }
             }
         }

@@ -1,7 +1,7 @@
-use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
-use walkdir::WalkDir;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectSummary {
@@ -52,8 +52,15 @@ impl Language {
     }
 
     pub fn is_code(&self) -> bool {
-        matches!(self, Language::Rust | Language::Python | Language::TypeScript
-            | Language::JavaScript | Language::Go | Language::Java)
+        matches!(
+            self,
+            Language::Rust
+                | Language::Python
+                | Language::TypeScript
+                | Language::JavaScript
+                | Language::Go
+                | Language::Java
+        )
     }
 }
 
@@ -61,7 +68,8 @@ pub struct ProjectScanner;
 
 impl ProjectScanner {
     pub fn scan(root: &Path) -> Result<ProjectSummary> {
-        let name = root.file_name()
+        let name = root
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
@@ -81,7 +89,11 @@ impl ProjectScanner {
             let language = Language::from_extension(ext);
             let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
 
-            let line_count = if language.is_code() || matches!(language, Language::Markdown | Language::Toml | Language::Yaml) {
+            let line_count = if language.is_code()
+                || matches!(
+                    language,
+                    Language::Markdown | Language::Toml | Language::Yaml
+                ) {
                 std::fs::read_to_string(&path)
                     .map(|s| s.lines().count())
                     .unwrap_or(0)
@@ -91,15 +103,23 @@ impl ProjectScanner {
 
             total_lines += line_count;
 
-            let relative_path = path.strip_prefix(root)
+            let relative_path = path
+                .strip_prefix(root)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
 
-            files.push(FileInfo { path, relative_path, language, size_bytes, line_count });
+            files.push(FileInfo {
+                path,
+                relative_path,
+                language,
+                size_bytes,
+                line_count,
+            });
         }
 
         // Language breakdown
-        let mut lang_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut lang_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for f in &files {
             if f.language.is_code() {
                 let key = format!("{:?}", f.language);
@@ -109,16 +129,30 @@ impl ProjectScanner {
         let mut language_breakdown: Vec<(String, usize)> = lang_counts.into_iter().collect();
         language_breakdown.sort_by(|a, b| b.1.cmp(&a.1));
 
-        Ok(ProjectSummary { root: root.to_path_buf(), name, files, total_lines, language_breakdown })
+        Ok(ProjectSummary {
+            root: root.to_path_buf(),
+            name,
+            files,
+            total_lines,
+            language_breakdown,
+        })
     }
 }
 
 fn is_ignored(path: &Path) -> bool {
     let ignored = [
-        ".git", "target", "node_modules", ".next", "dist", "build",
-        "__pycache__", ".venv", "venv", ".idea", ".vscode",
+        ".git",
+        "target",
+        "node_modules",
+        ".next",
+        "dist",
+        "build",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".idea",
+        ".vscode",
     ];
-    path.components().any(|c| {
-        ignored.iter().any(|i| c.as_os_str() == *i)
-    })
+    path.components()
+        .any(|c| ignored.iter().any(|i| c.as_os_str() == *i))
 }

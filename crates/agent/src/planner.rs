@@ -1,9 +1,12 @@
-use std::sync::Arc;
-use loci_core::{types::*, error::{AppError, Result}};
+use chrono::Utc;
+use loci_core::{
+    error::{AppError, Result},
+    types::*,
+};
 use loci_llm::LlmClient;
 use loci_tools::ToolRegistry;
+use std::sync::Arc;
 use uuid::Uuid;
-use chrono::Utc;
 
 pub struct Planner {
     llm: Arc<dyn LlmClient>,
@@ -17,7 +20,10 @@ impl Planner {
 
     /// Ask the LLM to decompose the goal into a DAG of tasks.
     pub async fn plan(&self, goal: &str) -> Result<ExecutionPlan> {
-        let tool_list: String = self.tools.all().iter()
+        let tool_list: String = self
+            .tools
+            .all()
+            .iter()
             .map(|t| format!("- {}: {}", t.name(), t.description()))
             .collect::<Vec<_>>()
             .join("\n");
@@ -30,32 +36,56 @@ impl Planner {
         );
 
         let messages = vec![
-            Message { role: Role::System, content: system },
-            Message { role: Role::User, content: goal.to_string() },
+            Message {
+                role: Role::System,
+                content: system,
+            },
+            Message {
+                role: Role::User,
+                content: goal.to_string(),
+            },
         ];
 
         let response = self.llm.chat(messages, None).await?;
         let text = match response {
             loci_llm::LlmResponse::Text(t) => t,
-            _ => return Err(AppError::Planning("unexpected tool call from planner".into())),
+            _ => {
+                return Err(AppError::Planning(
+                    "unexpected tool call from planner".into(),
+                ))
+            }
         };
 
         // Parse the JSON plan
         let raw: serde_json::Value = serde_json::from_str(&text)
             .map_err(|e| AppError::Planning(format!("invalid plan JSON: {e}")))?;
 
-        let tasks = raw["tasks"].as_array()
+        let tasks = raw["tasks"]
+            .as_array()
             .ok_or_else(|| AppError::Planning("missing tasks array".into()))?
             .iter()
             .map(|t| Task {
-                id: t["id"].as_str().and_then(|s| Uuid::parse_str(s).ok()).unwrap_or_else(Uuid::new_v4),
+                id: t["id"]
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .unwrap_or_else(Uuid::new_v4),
                 goal: t["goal"].as_str().unwrap_or("").to_string(),
-                depends_on: t["depends_on"].as_array().map(|a| {
-                    a.iter().filter_map(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok())).collect()
-                }).unwrap_or_default(),
-                tools: t["tools"].as_array().map(|a| {
-                    a.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-                }).unwrap_or_default(),
+                depends_on: t["depends_on"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().and_then(|s| Uuid::parse_str(s).ok()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                tools: t["tools"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 context_refs: vec![],
                 status: TaskStatus::Pending,
                 result: None,

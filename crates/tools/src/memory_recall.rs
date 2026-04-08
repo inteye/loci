@@ -1,14 +1,16 @@
 // Placeholder — will call into loci-memory crate
-use async_trait::async_trait;
-use serde_json::{json, Value};
-use loci_core::error::Result;
 use crate::{Tool, ToolContext};
+use async_trait::async_trait;
+use loci_core::error::Result;
+use serde_json::{json, Value};
 
 pub struct MemoryRecall;
 
 #[async_trait]
 impl Tool for MemoryRecall {
-    fn name(&self) -> &str { "memory_recall" }
+    fn name(&self) -> &str {
+        "memory_recall"
+    }
     fn description(&self) -> &str {
         "Recall relevant memories from past sessions or project context."
     }

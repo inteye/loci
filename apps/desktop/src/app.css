@@ -418,6 +418,35 @@ button {
   gap: 10px;
 }
 
+.provider-catalog {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.provider-preset-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(169, 188, 203, 0.12);
+  background: rgba(21, 35, 50, 0.76);
+  color: #dfe7ef;
+  text-align: left;
+}
+
+.provider-preset-card.custom {
+  border-style: dashed;
+}
+
+.provider-preset-card span,
+.provider-preset-card small {
+  color: #9bb0c3;
+  line-height: 1.5;
+}
+
 .provider-summary-chip {
   display: flex;
   flex-direction: column;
@@ -571,6 +600,33 @@ button {
 
 .field-group {
   gap: 8px;
+}
+
+.provider-readonly-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(7, 13, 19, 0.72);
+  border: 1px solid rgba(169, 188, 203, 0.1);
+}
+
+.provider-readonly-block div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.provider-readonly-block strong {
+  color: #9bb0c3;
+  font-size: 12px;
+}
+
+.provider-readonly-block span {
+  color: #dfe7ef;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .field-group-inline {

@@ -1,7 +1,7 @@
-use std::path::Path;
-use serde::{Deserialize, Serialize};
 use anyhow::Result;
 use git2::Repository;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Commit {
@@ -32,20 +32,21 @@ impl GitHistory {
         let mut commits = Vec::new();
 
         for oid in revwalk.flatten().take(200) {
-            if commits.len() >= limit { break; }
+            if commits.len() >= limit {
+                break;
+            }
             let commit = repo.find_commit(oid)?;
             let tree = commit.tree()?;
 
             // Check if this file was touched in this commit
             let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
-            let diff = repo.diff_tree_to_tree(
-                parent_tree.as_ref(),
-                Some(&tree),
-                None,
-            )?;
+            let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
 
             let touched = diff.deltas().any(|d| {
-                d.new_file().path().map(|p| p.to_string_lossy().as_ref() == file_path).unwrap_or(false)
+                d.new_file()
+                    .path()
+                    .map(|p| p.to_string_lossy().as_ref() == file_path)
+                    .unwrap_or(false)
             });
 
             if touched {
@@ -59,7 +60,11 @@ impl GitHistory {
         }
 
         let blame_summary = Self::blame_summary(&repo, file_path)?;
-        Ok(FileHistory { path: file_path.to_string(), commits, blame_summary })
+        Ok(FileHistory {
+            path: file_path.to_string(),
+            commits,
+            blame_summary,
+        })
     }
 
     /// Get the most recent N commits for the whole repo
@@ -88,9 +93,10 @@ impl GitHistory {
     fn blame_summary(repo: &Repository, file_path: &str) -> Result<Vec<(String, String)>> {
         let path = Path::new(file_path);
         let blame = repo.blame_file(path, None)?;
-        let file_content = std::fs::read_to_string(repo.workdir().unwrap_or(repo.path()).join(path))
-            .or_else(|_| std::fs::read_to_string(path))
-            .unwrap_or_default();
+        let file_content =
+            std::fs::read_to_string(repo.workdir().unwrap_or(repo.path()).join(path))
+                .or_else(|_| std::fs::read_to_string(path))
+                .unwrap_or_default();
         let lines: Vec<&str> = file_content.lines().collect();
 
         let mut summary = Vec::new();
@@ -109,7 +115,12 @@ impl GitHistory {
             let content = if excerpt.is_empty() {
                 format!("lines {}-{}", start + 1, end)
             } else {
-                format!("lines {}-{}: {}", start + 1, end, excerpt.chars().take(120).collect::<String>())
+                format!(
+                    "lines {}-{}: {}",
+                    start + 1,
+                    end,
+                    excerpt.chars().take(120).collect::<String>()
+                )
             };
 
             summary.push((commit_hash, content));

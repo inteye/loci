@@ -1,6 +1,6 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
@@ -8,7 +8,7 @@ pub struct Node {
     pub kind: NodeKind,
     pub name: String,
     pub file_path: Option<String>,
-    pub description: Option<String>,  // LLM-generated summary
+    pub description: Option<String>, // LLM-generated summary
     pub raw_source: Option<String>,
     pub created_at: DateTime<Utc>,
 }
@@ -22,9 +22,9 @@ pub enum NodeKind {
     Enum,
     Trait,
     Function,
-    Concept,   // LLM-extracted abstract concept
-    Commit,    // Git commit as a traceability node
-    Decision,  // Derived design decision with supporting evidence
+    Concept,  // LLM-extracted abstract concept
+    Commit,   // Git commit as a traceability node
+    Decision, // Derived design decision with supporting evidence
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,15 +71,21 @@ impl KnowledgeGraph {
     }
 
     pub fn find_node_by_name(&self, name: &str) -> Option<&Node> {
-        self.nodes.iter().find(|n| n.name.eq_ignore_ascii_case(name))
+        self.nodes
+            .iter()
+            .find(|n| n.name.eq_ignore_ascii_case(name))
     }
 
     pub fn neighbors(&self, node_id: Uuid) -> Vec<(&Edge, &Node)> {
-        self.edges.iter()
+        self.edges
+            .iter()
             .filter(|e| e.from == node_id || e.to == node_id)
             .filter_map(|e| {
                 let neighbor_id = if e.from == node_id { e.to } else { e.from };
-                self.nodes.iter().find(|n| n.id == neighbor_id).map(|n| (e, n))
+                self.nodes
+                    .iter()
+                    .find(|n| n.id == neighbor_id)
+                    .map(|n| (e, n))
             })
             .collect()
     }
@@ -89,7 +95,9 @@ impl KnowledgeGraph {
         let ids: Option<std::collections::HashSet<Uuid>> = focus_node.map(|id| {
             let mut s = std::collections::HashSet::new();
             s.insert(id);
-            for (_, n) in self.neighbors(id) { s.insert(n.id); }
+            for (_, n) in self.neighbors(id) {
+                s.insert(n.id);
+            }
             s
         });
         self.render_context(ids.as_ref())
@@ -102,7 +110,9 @@ impl KnowledgeGraph {
 
     fn render_context(&self, filter: Option<&std::collections::HashSet<Uuid>>) -> String {
         let mut out = String::new();
-        let nodes: Vec<&Node> = self.nodes.iter()
+        let nodes: Vec<&Node> = self
+            .nodes
+            .iter()
             .filter(|n| filter.map_or(true, |f| f.contains(&n.id)))
             .collect();
 
@@ -118,8 +128,18 @@ impl KnowledgeGraph {
         out.push_str("\nRelations:\n");
         for edge in &self.edges {
             if node_ids.contains(&edge.from) && node_ids.contains(&edge.to) {
-                let from = self.nodes.iter().find(|n| n.id == edge.from).map(|n| n.name.as_str()).unwrap_or("?");
-                let to   = self.nodes.iter().find(|n| n.id == edge.to  ).map(|n| n.name.as_str()).unwrap_or("?");
+                let from = self
+                    .nodes
+                    .iter()
+                    .find(|n| n.id == edge.from)
+                    .map(|n| n.name.as_str())
+                    .unwrap_or("?");
+                let to = self
+                    .nodes
+                    .iter()
+                    .find(|n| n.id == edge.to)
+                    .map(|n| n.name.as_str())
+                    .unwrap_or("?");
                 out.push_str(&format!("  {} --[{:?}]--> {}\n", from, edge.kind, to));
             }
         }

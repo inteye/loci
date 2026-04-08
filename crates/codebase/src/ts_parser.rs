@@ -1,9 +1,9 @@
+use crate::rust_parser::{ParsedFile, Symbol, SymbolKind, Visibility};
+use anyhow::Result;
 /// Tree-sitter based parser for Python, TypeScript, Go, and Java.
 /// Extracts the same Symbol/ParsedFile types as the Rust parser.
 use std::path::Path;
-use tree_sitter::{Parser, Node};
-use crate::rust_parser::{ParsedFile, Symbol, SymbolKind, Visibility};
-use anyhow::Result;
+use tree_sitter::{Node, Parser};
 
 pub struct TsParser;
 
@@ -23,7 +23,8 @@ impl TsParser {
         };
         parser.set_language(&language)?;
 
-        let tree = parser.parse(&source, None)
+        let tree = parser
+            .parse(&source, None)
             .ok_or_else(|| anyhow::anyhow!("parse failed"))?;
 
         let symbols = match ext {
@@ -56,13 +57,22 @@ fn extract_python(root: &Node, src: &[u8]) -> Vec<Symbol> {
             "function_definition" | "decorated_definition" => {
                 let target = if node.kind() == "decorated_definition" {
                     node.child_by_field_name("definition").unwrap_or(node)
-                } else { node };
+                } else {
+                    node
+                };
                 if let Some(name_node) = target.child_by_field_name("name") {
                     let name = node_text(&name_node, src).to_string();
-                    let is_async = target.child(0).map(|c| c.kind() == "async").unwrap_or(false);
+                    let is_async = target
+                        .child(0)
+                        .map(|c| c.kind() == "async")
+                        .unwrap_or(false);
                     symbols.push(Symbol {
                         name,
-                        kind: if is_async { SymbolKind::AsyncFunction } else { SymbolKind::Function },
+                        kind: if is_async {
+                            SymbolKind::AsyncFunction
+                        } else {
+                            SymbolKind::Function
+                        },
                         visibility: Visibility::Public,
                         doc_comment: extract_python_docstring(&target, src),
                         line: target.start_position().row + 1,
@@ -98,7 +108,11 @@ fn extract_python_docstring(node: &Node, src: &[u8]) -> Option<String> {
         let expr = first.child(0)?;
         if expr.kind() == "string" {
             let raw = node_text(&expr, src);
-            return Some(raw.trim_matches(|c| c == '"' || c == '\'').trim().to_string());
+            return Some(
+                raw.trim_matches(|c| c == '"' || c == '\'')
+                    .trim()
+                    .to_string(),
+            );
         }
     }
     None
@@ -114,10 +128,17 @@ fn walk_ts(node: &Node, src: &[u8], out: &mut Vec<Symbol>) {
     match node.kind() {
         "function_declaration" | "function" => {
             if let Some(name_node) = node.child_by_field_name("name") {
-                let is_async = node.child(0).map(|c| node_text(&c, src) == "async").unwrap_or(false);
+                let is_async = node
+                    .child(0)
+                    .map(|c| node_text(&c, src) == "async")
+                    .unwrap_or(false);
                 out.push(Symbol {
                     name: node_text(&name_node, src).to_string(),
-                    kind: if is_async { SymbolKind::AsyncFunction } else { SymbolKind::Function },
+                    kind: if is_async {
+                        SymbolKind::AsyncFunction
+                    } else {
+                        SymbolKind::Function
+                    },
                     visibility: Visibility::Public,
                     doc_comment: None,
                     line: node.start_position().row + 1,
@@ -180,7 +201,8 @@ fn extract_go(root: &Node, src: &[u8]) -> Vec<Symbol> {
             }
             "method_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
-                    let receiver = node.child_by_field_name("receiver")
+                    let receiver = node
+                        .child_by_field_name("receiver")
                         .and_then(|r| r.child_by_field_name("type"))
                         .map(|t| node_text(&t, src).trim_start_matches('*').to_string());
                     symbols.push(Symbol {
