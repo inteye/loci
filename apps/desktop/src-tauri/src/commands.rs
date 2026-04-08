@@ -229,8 +229,7 @@ async fn test_provider_connection_local(
         .chat(
             vec![Message {
                 role: Role::User,
-                content: "Reply with a short confirmation that the model connection works."
-                    .to_string(),
+                content: "请用简体中文简短确认模型连接可用。".to_string(),
             }],
             None,
         )
@@ -500,21 +499,24 @@ fn build_doc_prompt(graph: &KnowledgeGraph, kind: &str) -> String {
 
     match kind {
         "module" => format!(
-            "Generate a module summary document from the project graph.\n\
-             Prioritize factual description first, then inferred design rationale.\n\
-             Output Markdown with sections: Overview, Key Modules, Decisions, Open Questions.\n\n{}",
+            "请根据项目图谱生成一份模块概览文档。\n\
+             默认使用简体中文输出。\n\
+             先写事实，再写推断出的设计原因。\n\
+             输出 Markdown，并包含这些章节：概览、关键模块、重要决策、开放问题。\n\n{}",
             context
         ),
         "handoff" => format!(
-            "Generate a handoff document for a new maintainer from the project graph.\n\
-             Prioritize factual description first, then inferred design rationale.\n\
-             Output Markdown with sections: What Matters Most, Important Decisions, Risk Areas, Open Questions.\n\n{}",
+            "请根据项目图谱生成一份交接文档，面向新维护者。\n\
+             默认使用简体中文输出。\n\
+             先写事实，再写推断出的设计原因。\n\
+             输出 Markdown，并包含这些章节：最重要的内容、关键决策、风险区域、开放问题。\n\n{}",
             context
         ),
         _ => format!(
-            "Generate an onboarding guide for a new developer from the project graph.\n\
-             Prioritize factual description first, then inferred design rationale.\n\
-             Output Markdown with sections: Project Overview, Where to Start, Important Decisions, Core Concepts, Open Questions.\n\n{}",
+            "请根据项目图谱生成一份给新同事的入门指南。\n\
+             默认使用简体中文输出。\n\
+             先写事实，再写推断出的设计原因。\n\
+             输出 Markdown，并包含这些章节：项目概览、从哪里开始、重要决策、核心概念、开放问题。\n\n{}",
             context
         ),
     }
@@ -935,7 +937,8 @@ async fn ask_local(
     let memory_ctx = build_memory_context(&q_vec, &memory_store).await;
     let kb_ctx = build_kb_context(&q_vec, &knowledge_store).await;
     let system = format!(
-        "You are a codebase understanding assistant.\n\n## Knowledge Graph\n{}{}{}\n\nAnswer accurately.",
+        "你是一个代码库理解助手。默认使用简体中文回答，除非用户明确要求其他语言。\n\
+         回答要准确、直接，并优先基于图谱事实、决策节点和上下文作答。\n\n## Knowledge Graph\n{}{}{}\n\n请给出清晰回答。",
         graph_ctx, memory_ctx, kb_ctx
     );
 
@@ -1075,8 +1078,8 @@ async fn eval_local(project_path: &Path, provider: Option<&str>) -> Result<EvalD
         average_score,
         results,
         drift_check: vec![
-            "Runs against the locally indexed graph without requiring an external HTTP service.".to_string(),
-            "Reuses the same in-app graph, memory, knowledge, and decision context used by desktop ask.".to_string(),
+            "评测直接基于本地索引后的图谱运行，不依赖额外 HTTP 服务。".to_string(),
+            "评测复用了桌面端问答使用的图谱、记忆、知识和决策上下文。".to_string(),
         ],
     })
 }
