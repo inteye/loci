@@ -10,6 +10,14 @@ protocol = "openai"
 model = "gpt-4o"
 api_key_env = "OPENAI_API_KEY"
 
+# 推荐：LiteLLM 统一网关
+[[providers]]
+name = "litellm"
+protocol = "litellm"
+base_url = "http://localhost:4000/v1"
+model = "gpt-4o-mini"
+api_key_env = "LITELLM_API_KEY"
+
 # Ollama（本地，无需 API key，OpenAI 兼容协议）
 [[providers]]
 name = "ollama"

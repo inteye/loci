@@ -11,6 +11,8 @@ use loci_memory::{remember, MemoryStore};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use tauri::AppHandle;
+use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 #[derive(Serialize)]
@@ -185,22 +187,61 @@ fn is_evidence_edge(kind: &EdgeKind) -> bool {
 }
 
 fn require_llm(cfg: &BsConfig, provider: Option<&str>) -> Result<Box<dyn LlmClient>, String> {
-    cfg.build_client(provider)
-        .map_err(|_| "No LLM configured. Create .bs/config.toml and configure an OpenAI or Anthropic compatible provider.".to_string())
+    cfg.build_client(provider).map_err(|_| {
+        "No LLM configured. Create .bs/config.toml and configure a LiteLLM, OpenAI-compatible, or Anthropic provider."
+            .to_string()
+    })
 }
 
 fn provider_protocol_to_string(protocol: &ProviderProtocol) -> String {
     match protocol {
         ProviderProtocol::OpenAi => "openai".to_string(),
+        ProviderProtocol::LiteLlm => "litellm".to_string(),
         ProviderProtocol::Anthropic => "anthropic".to_string(),
     }
 }
 
 fn provider_protocol_from_string(value: &str) -> ProviderProtocol {
     match value.trim().to_lowercase().as_str() {
+        "litellm" => ProviderProtocol::LiteLlm,
         "anthropic" => ProviderProtocol::Anthropic,
         _ => ProviderProtocol::OpenAi,
     }
+}
+
+async fn test_provider_connection_local(
+    project_path: &Path,
+    provider: Option<&str>,
+) -> Result<String, String> {
+    let cfg = BsConfig::load(project_path).unwrap_or_default();
+    let llm = require_llm(&cfg, provider)?;
+    let provider_name = provider
+        .map(str::to_string)
+        .or(cfg.default_provider.clone())
+        .unwrap_or_else(|| "default".to_string());
+    let response = llm
+        .chat(
+            vec![Message {
+                role: Role::User,
+                content: "Reply with a short confirmation that the model connection works."
+                    .to_string(),
+            }],
+            None,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let text = match response {
+        loci_llm::LlmResponse::Text(text) => text,
+        _ => "Received a non-text response from the model.".to_string(),
+    };
+
+    Ok(format!(
+        "连接成功：provider={} model={}\n\n{}",
+        provider_name,
+        llm.model(),
+        text
+    ))
 }
 
 fn settings_from_config(project_path: &Path, cfg: BsConfig) -> ModelSettingsData {
@@ -907,6 +948,14 @@ pub async fn get_default_project_path() -> Result<String, String> {
 }
 
 #[tauri::command]
+pub async fn pick_project_directory(app: AppHandle) -> Result<Option<String>, String> {
+    let selected = app.dialog().file().blocking_pick_folder();
+    Ok(selected
+        .and_then(|path| path.into_path().ok())
+        .map(normalize_project_path))
+}
+
+#[tauri::command]
 pub async fn get_model_settings(project_path: String) -> Result<ModelSettingsData, String> {
     let project_path = resolve_project_path(&project_path);
     let cfg = BsConfig::load(&project_path).unwrap_or_default();
@@ -924,6 +973,15 @@ pub async fn save_model_settings(
         .save_project(&project_path)
         .map_err(|e| e.to_string())?;
     Ok(format!("模型设置已保存到 {}", path.display()))
+}
+
+#[tauri::command]
+pub async fn test_model_connection(
+    project_path: String,
+    provider: Option<String>,
+) -> Result<String, String> {
+    let project_path = resolve_project_path(&project_path);
+    test_provider_connection_local(&project_path, provider.as_deref()).await
 }
 
 #[tauri::command]

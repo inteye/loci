@@ -1,19 +1,19 @@
-use std::path::PathBuf;
-use clap::{Parser, Subcommand};
 use anyhow::Result;
-use rustyline::{DefaultEditor, error::ReadlineError};
-use std::sync::Arc;
-use loci_codebase::{CodebaseIndexer, GitHistory};
-use loci_graph::{KnowledgeGraph, GraphStore, Node, Edge, NodeKind, EdgeKind, VectorIndex};
-use loci_llm::{LlmClient, config::BsConfig};
-use loci_agent::{TraceAgent, TraceReport};
-use loci_memory::{MemoryStore, remember};
-use loci_knowledge::{KnowledgeStore, ingest_file, ingest_url};
-use loci_skills::SkillRegistry;
-use loci_core::types::{Message, Role, MemoryScope};
-use uuid::Uuid;
 use chrono::Utc;
-use serde::{Serialize, Deserialize};
+use clap::{Parser, Subcommand};
+use loci_agent::{TraceAgent, TraceReport};
+use loci_codebase::{CodebaseIndexer, GitHistory};
+use loci_core::types::{MemoryScope, Message, Role};
+use loci_graph::{Edge, EdgeKind, GraphStore, KnowledgeGraph, Node, NodeKind, VectorIndex};
+use loci_knowledge::{ingest_file, ingest_url, KnowledgeStore};
+use loci_llm::{config::BsConfig, LlmClient};
+use loci_memory::{remember, MemoryStore};
+use loci_skills::SkillRegistry;
+use rustyline::{error::ReadlineError, DefaultEditor};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::Arc;
+use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(name = "loci", about = "loci — codebase understanding agent")]
@@ -146,12 +146,25 @@ enum Command {
         #[arg(long)]
         provider: Option<String>,
     },
+    /// Inspect or test model providers
+    Model {
+        #[command(subcommand)]
+        action: ModelAction,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+        #[arg(long)]
+        provider: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
 enum ProjectAction {
     /// Register current directory as a named project
-    Add { name: String, #[arg(short, long)] path: Option<PathBuf> },
+    Add {
+        name: String,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+    },
     /// List all registered projects
     List,
     /// Switch active project (sets default path for all commands)
@@ -180,26 +193,98 @@ enum KnowledgeAction {
     Watch { dir: PathBuf },
 }
 
+#[derive(Subcommand)]
+enum ModelAction {
+    /// List configured providers
+    List,
+    /// Test the selected or default provider connection
+    Test,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     match cli.command {
-        Command::Index { path, incremental }                    => cmd_index(&resolve_command_path(path)?, incremental).await,
-        Command::Embed { path, provider }                       => cmd_embed(&resolve_command_path(path)?, provider.as_deref()).await,
-        Command::Ask { question, path, provider }               => cmd_ask(question.as_deref(), &resolve_command_path(path)?, provider.as_deref()).await,
-        Command::Graph { path }                                 => cmd_graph(&resolve_command_path(path)?).await,
-        Command::History { file, path }                         => cmd_history(&file, &resolve_command_path(path)?).await,
-        Command::Explain { target, path, provider }             => cmd_explain(&target, &resolve_command_path(path)?, provider.as_deref()).await,
-        Command::Diff { commit, path, provider }                => cmd_diff(&commit, &resolve_command_path(path)?, provider.as_deref()).await,
-        Command::Trace { target, path }                         => cmd_trace(&target, &resolve_command_path(path)?).await,
-        Command::Doc { kind, path, provider }                   => cmd_doc(&kind, &resolve_command_path(path)?, provider.as_deref()).await,
-        Command::Eval { path, provider, output }                => cmd_eval(&resolve_command_path(path)?, provider.as_deref(), output.as_ref()).await,
-        Command::Serve { path, port, provider }                 => cmd_serve(&resolve_command_path(path)?, port, provider.as_deref()).await,
-        Command::Project { action }                             => cmd_project(action).await,
-        Command::Skill { name, input, path, provider }          => cmd_skill(name.as_deref(), input.as_deref(), &resolve_command_path(path)?, provider.as_deref()).await,
-        Command::Memory { action, path }                        => cmd_memory(action, &resolve_command_path(path)?).await,
-        Command::Knowledge { action, path, provider }           => cmd_knowledge(action, &resolve_command_path(path)?, provider.as_deref()).await,
+        Command::Index { path, incremental } => {
+            cmd_index(&resolve_command_path(path)?, incremental).await
+        }
+        Command::Embed { path, provider } => {
+            cmd_embed(&resolve_command_path(path)?, provider.as_deref()).await
+        }
+        Command::Ask {
+            question,
+            path,
+            provider,
+        } => {
+            cmd_ask(
+                question.as_deref(),
+                &resolve_command_path(path)?,
+                provider.as_deref(),
+            )
+            .await
+        }
+        Command::Graph { path } => cmd_graph(&resolve_command_path(path)?).await,
+        Command::History { file, path } => cmd_history(&file, &resolve_command_path(path)?).await,
+        Command::Explain {
+            target,
+            path,
+            provider,
+        } => cmd_explain(&target, &resolve_command_path(path)?, provider.as_deref()).await,
+        Command::Diff {
+            commit,
+            path,
+            provider,
+        } => cmd_diff(&commit, &resolve_command_path(path)?, provider.as_deref()).await,
+        Command::Trace { target, path } => cmd_trace(&target, &resolve_command_path(path)?).await,
+        Command::Doc {
+            kind,
+            path,
+            provider,
+        } => cmd_doc(&kind, &resolve_command_path(path)?, provider.as_deref()).await,
+        Command::Eval {
+            path,
+            provider,
+            output,
+        } => {
+            cmd_eval(
+                &resolve_command_path(path)?,
+                provider.as_deref(),
+                output.as_ref(),
+            )
+            .await
+        }
+        Command::Serve {
+            path,
+            port,
+            provider,
+        } => cmd_serve(&resolve_command_path(path)?, port, provider.as_deref()).await,
+        Command::Project { action } => cmd_project(action).await,
+        Command::Skill {
+            name,
+            input,
+            path,
+            provider,
+        } => {
+            cmd_skill(
+                name.as_deref(),
+                input.as_deref(),
+                &resolve_command_path(path)?,
+                provider.as_deref(),
+            )
+            .await
+        }
+        Command::Memory { action, path } => cmd_memory(action, &resolve_command_path(path)?).await,
+        Command::Knowledge {
+            action,
+            path,
+            provider,
+        } => cmd_knowledge(action, &resolve_command_path(path)?, provider.as_deref()).await,
+        Command::Model {
+            action,
+            path,
+            provider,
+        } => cmd_model(action, &resolve_command_path(path)?, provider.as_deref()).await,
     }
 }
 
@@ -210,12 +295,20 @@ async fn cmd_index(path: &PathBuf, incremental: bool) -> Result<()> {
 
     let ts_file = bs_dir(path).join("last_index");
     let last_ts: i64 = if incremental {
-        std::fs::read_to_string(&ts_file).ok()
-            .and_then(|s| s.trim().parse().ok()).unwrap_or(0)
-    } else { 0 };
+        std::fs::read_to_string(&ts_file)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
     let mut index = CodebaseIndexer::index(path)?;
-    println!("Found {} files, {} lines", index.summary.files.len(), index.summary.total_lines);
+    println!(
+        "Found {} files, {} lines",
+        index.summary.files.len(),
+        index.summary.total_lines
+    );
     for (lang, count) in &index.summary.language_breakdown {
         println!("  {}: {} files", lang, count);
     }
@@ -233,19 +326,33 @@ async fn cmd_index(path: &PathBuf, incremental: bool) -> Result<()> {
 
 async fn build_graph(path: &PathBuf, index: &loci_codebase::CodebaseIndex) -> Result<()> {
     let store = GraphStore::new(&graph_db_path(path)).await?;
-    store.clear().await?;  // avoid duplicate nodes on re-index
+    store.clear().await?; // avoid duplicate nodes on re-index
     let mut graph = KnowledgeGraph::default();
-    let mut commit_nodes: std::collections::HashMap<String, Uuid> = std::collections::HashMap::new();
-    let parsed_by_path: std::collections::HashMap<String, &loci_codebase::ParsedFile> = index.parsed_files.iter()
+    let mut commit_nodes: std::collections::HashMap<String, Uuid> =
+        std::collections::HashMap::new();
+    let parsed_by_path: std::collections::HashMap<String, &loci_codebase::ParsedFile> = index
+        .parsed_files
+        .iter()
         .map(|pf| (pf.path.clone(), pf))
         .collect();
 
-    for file in index.summary.files.iter().filter(|file| file.language.is_code()) {
-        let parsed = parsed_by_path.get(&file.path.to_string_lossy().to_string()).copied();
+    for file in index
+        .summary
+        .files
+        .iter()
+        .filter(|file| file.language.is_code())
+    {
+        let parsed = parsed_by_path
+            .get(&file.path.to_string_lossy().to_string())
+            .copied();
         let file_node = Node {
-            id: Uuid::new_v4(), kind: NodeKind::File,
-            name: file.relative_path.clone(), file_path: Some(file.path.to_string_lossy().to_string()),
-            description: parsed.and_then(|pf| pf.doc_comment.clone()), raw_source: None, created_at: Utc::now(),
+            id: Uuid::new_v4(),
+            kind: NodeKind::File,
+            name: file.relative_path.clone(),
+            file_path: Some(file.path.to_string_lossy().to_string()),
+            description: parsed.and_then(|pf| pf.doc_comment.clone()),
+            raw_source: None,
+            created_at: Utc::now(),
         };
         let file_id = graph.add_node(file_node.clone());
         store.save_node(&file_node).await?;
@@ -263,7 +370,8 @@ async fn build_graph(path: &PathBuf, index: &loci_codebase::CodebaseIndex) -> Re
                         file_path: Some(file_path.clone()),
                         description: Some(format!("{} — {}", commit.message, commit.author)),
                         raw_source: None,
-                        created_at: chrono::DateTime::from_timestamp(commit.timestamp, 0).unwrap_or_else(Utc::now),
+                        created_at: chrono::DateTime::from_timestamp(commit.timestamp, 0)
+                            .unwrap_or_else(Utc::now),
                     };
                     let id = graph.add_node(node.clone());
                     store.save_node(&node).await?;
@@ -287,30 +395,58 @@ async fn build_graph(path: &PathBuf, index: &loci_codebase::CodebaseIndex) -> Re
             for sym in &pf.symbols {
                 let kind = match sym.kind {
                     loci_codebase::SymbolKind::Struct => NodeKind::Struct,
-                    loci_codebase::SymbolKind::Enum   => NodeKind::Enum,
-                    loci_codebase::SymbolKind::Trait  => NodeKind::Trait,
+                    loci_codebase::SymbolKind::Enum => NodeKind::Enum,
+                    loci_codebase::SymbolKind::Trait => NodeKind::Trait,
                     loci_codebase::SymbolKind::Module => NodeKind::Module,
                     _ => NodeKind::Function,
                 };
                 let sym_node = Node {
-                    id: Uuid::new_v4(), kind,
-                    name: sym.name.clone(), file_path: Some(file_path.clone()),
-                    description: sym.doc_comment.clone(), raw_source: None, created_at: Utc::now(),
+                    id: Uuid::new_v4(),
+                    kind,
+                    name: sym.name.clone(),
+                    file_path: Some(file_path.clone()),
+                    description: sym.doc_comment.clone(),
+                    raw_source: None,
+                    created_at: Utc::now(),
                 };
                 let sym_id = graph.add_node(sym_node.clone());
                 store.save_node(&sym_node).await?;
-                let edge = Edge { id: Uuid::new_v4(), from: file_id, to: sym_id, kind: EdgeKind::Contains, label: None };
+                let edge = Edge {
+                    id: Uuid::new_v4(),
+                    from: file_id,
+                    to: sym_id,
+                    kind: EdgeKind::Contains,
+                    label: None,
+                };
                 graph.add_edge(edge.clone());
                 store.save_edge(&edge).await?;
             }
 
             // Add Calls edges between symbols in this file
             for (caller, callee) in &pf.calls {
-                let from_id = graph.nodes.iter().find(|n| &n.name == caller && n.file_path.as_deref() == Some(file_path.as_str())).map(|n| n.id);
-                let to_id   = graph.nodes.iter().find(|n| &n.name == callee && n.file_path.as_deref() == Some(file_path.as_str())).map(|n| n.id);
+                let from_id = graph
+                    .nodes
+                    .iter()
+                    .find(|n| {
+                        &n.name == caller && n.file_path.as_deref() == Some(file_path.as_str())
+                    })
+                    .map(|n| n.id);
+                let to_id = graph
+                    .nodes
+                    .iter()
+                    .find(|n| {
+                        &n.name == callee && n.file_path.as_deref() == Some(file_path.as_str())
+                    })
+                    .map(|n| n.id);
                 if let (Some(from), Some(to)) = (from_id, to_id) {
                     if from != to {
-                        let edge = Edge { id: Uuid::new_v4(), from, to, kind: EdgeKind::Calls, label: None };
+                        let edge = Edge {
+                            id: Uuid::new_v4(),
+                            from,
+                            to,
+                            kind: EdgeKind::Calls,
+                            label: None,
+                        };
                         graph.add_edge(edge.clone());
                         store.save_edge(&edge).await?;
                     }
@@ -325,7 +461,12 @@ async fn build_graph(path: &PathBuf, index: &loci_codebase::CodebaseIndex) -> Re
         }
     }
 
-    println!("Graph: {} nodes, {} edges → {}", graph.nodes.len(), graph.edges.len(), graph_db_path(path));
+    println!(
+        "Graph: {} nodes, {} edges → {}",
+        graph.nodes.len(),
+        graph.edges.len(),
+        graph_db_path(path)
+    );
     Ok(())
 }
 
@@ -339,7 +480,8 @@ async fn cmd_embed(path: &PathBuf, provider: Option<&str>) -> Result<()> {
     let graph = store.load_graph().await?;
 
     if graph.nodes.is_empty() {
-        println!("No index. Run `loci index` first."); return Ok(());
+        println!("No index. Run `loci index` first.");
+        return Ok(());
     }
 
     println!("Processing {} nodes...", graph.nodes.len());
@@ -347,19 +489,37 @@ async fn cmd_embed(path: &PathBuf, provider: Option<&str>) -> Result<()> {
 
     for node in &graph.nodes {
         let description = if node.description.is_none() && !matches!(node.kind, NodeKind::File) {
-            let prompt = format!("One sentence: what does `{}` ({:?}) do in a Rust codebase?", node.name, node.kind);
-            match llm.chat(vec![Message { role: Role::User, content: prompt }], None).await {
+            let prompt = format!(
+                "One sentence: what does `{}` ({:?}) do in a Rust codebase?",
+                node.name, node.kind
+            );
+            match llm
+                .chat(
+                    vec![Message {
+                        role: Role::User,
+                        content: prompt,
+                    }],
+                    None,
+                )
+                .await
+            {
                 Ok(loci_llm::LlmResponse::Text(t)) => {
                     store.update_node_description(node.id, t.trim()).await?;
                     Some(t.trim().to_string())
                 }
                 _ => None,
             }
-        } else { node.description.clone() };
+        } else {
+            node.description.clone()
+        };
 
-        let text = format!("{} {:?} {} {}", node.name, node.kind,
+        let text = format!(
+            "{} {:?} {} {}",
+            node.name,
+            node.kind,
             description.as_deref().unwrap_or(""),
-            node.file_path.as_deref().unwrap_or(""));
+            node.file_path.as_deref().unwrap_or("")
+        );
 
         if let Ok(vec) = llm.embed(&text).await {
             vector_index.upsert(node.id, &vec).await?;
@@ -385,13 +545,23 @@ async fn cmd_ask(question: Option<&str>, path: &PathBuf, provider: Option<&str>)
     }
 
     let mem_store = MemoryStore::new(&memory_db_path(path)).await?;
-    let kb_store  = KnowledgeStore::new(&knowledge_db_path(path)).await?;
+    let kb_store = KnowledgeStore::new(&knowledge_db_path(path)).await?;
     let vector_index = VectorIndex::new(store.pool.clone()).await?;
     let has_embeddings = vector_index.count().await? > 0;
 
     // Single question mode
     if let Some(q) = question {
-        let answer = do_ask(q, &*llm, &graph, &store, &vector_index, has_embeddings, &mem_store, &kb_store).await?;
+        let answer = do_ask(
+            q,
+            &*llm,
+            &graph,
+            &store,
+            &vector_index,
+            has_embeddings,
+            &mem_store,
+            &kb_store,
+        )
+        .await?;
         println!("{}", answer);
         return Ok(());
     }
@@ -405,15 +575,20 @@ async fn cmd_ask(question: Option<&str>, path: &PathBuf, provider: Option<&str>)
         match rl.readline("you> ") {
             Ok(line) => {
                 let q = line.trim().to_string();
-                if q.is_empty() { continue; }
-                if q == "exit" || q == "quit" { break; }
+                if q.is_empty() {
+                    continue;
+                }
+                if q == "exit" || q == "quit" {
+                    break;
+                }
                 rl.add_history_entry(&q)?;
 
                 // Build context once per question
                 let q_vec = llm.embed(&q).await.ok();
-                let graph_ctx = build_graph_context(&q, &q_vec, &graph, &vector_index, has_embeddings).await;
-                let mem_ctx   = build_memory_context(&q_vec, &mem_store).await;
-                let kb_ctx    = build_kb_context(&q_vec, &kb_store).await;
+                let graph_ctx =
+                    build_graph_context(&q, &q_vec, &graph, &vector_index, has_embeddings).await;
+                let mem_ctx = build_memory_context(&q_vec, &mem_store).await;
+                let kb_ctx = build_kb_context(&q_vec, &kb_store).await;
 
                 // System prompt (only first turn)
                 if session_history.is_empty() {
@@ -426,12 +601,18 @@ async fn cmd_ask(question: Option<&str>, path: &PathBuf, provider: Option<&str>)
                     });
                 }
 
-                session_history.push(Message { role: Role::User, content: q.clone() });
+                session_history.push(Message {
+                    role: Role::User,
+                    content: q.clone(),
+                });
 
                 match llm.chat(session_history.clone(), None).await {
                     Ok(loci_llm::LlmResponse::Text(answer)) => {
                         println!("\nbs> {}\n", answer);
-                        session_history.push(Message { role: Role::Assistant, content: answer.clone() });
+                        session_history.push(Message {
+                            role: Role::Assistant,
+                            content: answer.clone(),
+                        });
 
                         persist_answer_artifacts(
                             &q,
@@ -442,14 +623,18 @@ async fn cmd_ask(question: Option<&str>, path: &PathBuf, provider: Option<&str>)
                             &vector_index,
                             &mem_store,
                             &kb_store,
-                        ).await;
+                        )
+                        .await;
                     }
                     Ok(_) => {}
                     Err(e) => eprintln!("Error: {}", e),
                 }
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
-            Err(e) => { eprintln!("Error: {}", e); break; }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                break;
+            }
         }
     }
     Ok(())
@@ -466,20 +651,35 @@ async fn do_ask(
     kb_store: &KnowledgeStore,
 ) -> Result<String> {
     let q_vec = llm.embed(question).await.ok();
-    let graph_ctx = build_graph_context(question, &q_vec, graph, vector_index, has_embeddings).await;
-    let mem_ctx   = build_memory_context(&q_vec, mem_store).await;
-    let kb_ctx    = build_kb_context(&q_vec, kb_store).await;
+    let graph_ctx =
+        build_graph_context(question, &q_vec, graph, vector_index, has_embeddings).await;
+    let mem_ctx = build_memory_context(&q_vec, mem_store).await;
+    let kb_ctx = build_kb_context(&q_vec, kb_store).await;
 
     let system = format!(
         "You are a codebase understanding assistant.\n\n## Knowledge Graph\n{}{}{}\n\nAnswer accurately.",
         graph_ctx, mem_ctx, kb_ctx
     );
-    let response = llm.chat(vec![
-        Message { role: Role::System, content: system },
-        Message { role: Role::User,   content: question.to_string() },
-    ], None).await?;
+    let response = llm
+        .chat(
+            vec![
+                Message {
+                    role: Role::System,
+                    content: system,
+                },
+                Message {
+                    role: Role::User,
+                    content: question.to_string(),
+                },
+            ],
+            None,
+        )
+        .await?;
 
-    let answer = match response { loci_llm::LlmResponse::Text(t) => t, _ => String::new() };
+    let answer = match response {
+        loci_llm::LlmResponse::Text(t) => t,
+        _ => String::new(),
+    };
 
     persist_answer_artifacts(
         question,
@@ -490,7 +690,8 @@ async fn do_ask(
         vector_index,
         mem_store,
         kb_store,
-    ).await;
+    )
+    .await;
 
     Ok(answer)
 }
@@ -509,7 +710,16 @@ async fn persist_answer_artifacts(
     let mem_vec = llm.embed(&mem_text).await.ok();
     let _ = remember(mem_store, &mem_text, MemoryScope::Session, None, mem_vec).await;
 
-    auto_extract_knowledge(question, answer, llm, kb_store, graph, graph_store, vector_index).await;
+    auto_extract_knowledge(
+        question,
+        answer,
+        llm,
+        kb_store,
+        graph,
+        graph_store,
+        vector_index,
+    )
+    .await;
 }
 
 async fn auto_extract_knowledge(
@@ -525,11 +735,19 @@ async fn auto_extract_knowledge(
         "Does this Q&A contain a reusable technical insight, design decision, or explanation \
          worth saving to the project graph? If yes, extract it as a single concise paragraph. \
          If no, reply with exactly: SKIP\n\nQ: {}\nA: {}",
-        question, &answer[..answer.len().min(800)]
+        question,
+        &answer[..answer.len().min(800)]
     );
-    if let Ok(loci_llm::LlmResponse::Text(t)) = llm.chat(
-        vec![Message { role: Role::User, content: prompt }], None
-    ).await {
+    if let Ok(loci_llm::LlmResponse::Text(t)) = llm
+        .chat(
+            vec![Message {
+                role: Role::User,
+                content: prompt,
+            }],
+            None,
+        )
+        .await
+    {
         let t = t.trim().to_string();
         if t != "SKIP" && !t.is_empty() {
             let concept = Node {
@@ -548,7 +766,9 @@ async fn auto_extract_knowledge(
 
                     if let Ok(hits) = vector_index.search(&vec, 3).await {
                         for (node_id, _) in hits {
-                            if node_id == concept.id { continue; }
+                            if node_id == concept.id {
+                                continue;
+                            }
                             if graph.nodes.iter().any(|n| n.id == node_id) {
                                 let edge = Edge {
                                     id: Uuid::new_v4(),
@@ -579,15 +799,31 @@ async fn build_graph_context(
             if let Ok(hits) = vi.search(qv, 30).await {
                 let trace_query = is_trace_question(question);
                 let mut ranked_ids: Vec<Uuid> = if trace_query {
-                    let mut preferred: Vec<Uuid> = hits.iter()
-                        .filter_map(|(id, _)| graph.nodes.iter()
-                            .find(|n| n.id == *id && matches!(n.kind, NodeKind::Decision | NodeKind::Commit))
-                            .map(|n| n.id))
+                    let mut preferred: Vec<Uuid> = hits
+                        .iter()
+                        .filter_map(|(id, _)| {
+                            graph
+                                .nodes
+                                .iter()
+                                .find(|n| {
+                                    n.id == *id
+                                        && matches!(n.kind, NodeKind::Decision | NodeKind::Commit)
+                                })
+                                .map(|n| n.id)
+                        })
                         .collect();
-                    let mut fallback: Vec<Uuid> = hits.iter()
-                        .filter_map(|(id, _)| graph.nodes.iter()
-                            .find(|n| n.id == *id && !matches!(n.kind, NodeKind::Decision | NodeKind::Commit))
-                            .map(|n| n.id))
+                    let mut fallback: Vec<Uuid> = hits
+                        .iter()
+                        .filter_map(|(id, _)| {
+                            graph
+                                .nodes
+                                .iter()
+                                .find(|n| {
+                                    n.id == *id
+                                        && !matches!(n.kind, NodeKind::Decision | NodeKind::Commit)
+                                })
+                                .map(|n| n.id)
+                        })
                         .collect();
                     preferred.append(&mut fallback);
                     preferred
@@ -597,15 +833,27 @@ async fn build_graph_context(
 
                 ranked_ids.truncate(if trace_query { 18 } else { 20 });
                 let mut ids: std::collections::HashSet<Uuid> = ranked_ids.into_iter().collect();
-                for id in ids.clone() { for (_, n) in graph.neighbors(id) { ids.insert(n.id); } }
+                for id in ids.clone() {
+                    for (_, n) in graph.neighbors(id) {
+                        ids.insert(n.id);
+                    }
+                }
                 let mut context = graph.to_context_str_filtered(&ids);
                 if trace_query {
-                    let decision_section = graph.nodes.iter()
+                    let decision_section = graph
+                        .nodes
+                        .iter()
                         .filter(|n| ids.contains(&n.id) && n.kind == NodeKind::Decision)
-                        .map(|n| format!("- {}: {}", n.name, n.description.as_deref().unwrap_or("")))
+                        .map(|n| {
+                            format!("- {}: {}", n.name, n.description.as_deref().unwrap_or(""))
+                        })
                         .collect::<Vec<_>>();
                     if !decision_section.is_empty() {
-                        context = format!("## Prior Decisions\n{}\n\n{}", decision_section.join("\n"), context);
+                        context = format!(
+                            "## Prior Decisions\n{}\n\n{}",
+                            decision_section.join("\n"),
+                            context
+                        );
                     }
                 }
                 return context;
@@ -628,19 +876,44 @@ fn is_trace_question(question: &str) -> bool {
         "diff",
         "演进",
         "trace",
-    ].iter().any(|needle| q.contains(needle))
+    ]
+    .iter()
+    .any(|needle| q.contains(needle))
 }
 
 async fn build_memory_context(q_vec: &Option<Vec<f32>>, store: &MemoryStore) -> String {
-    let mems = store.recall(q_vec.as_deref(), Some(MemoryScope::Session), None, 5).await.unwrap_or_default();
-    if mems.is_empty() { return String::new(); }
-    format!("\n## Past context\n{}", mems.iter().map(|m| format!("- {}", m.content)).collect::<Vec<_>>().join("\n"))
+    let mems = store
+        .recall(q_vec.as_deref(), Some(MemoryScope::Session), None, 5)
+        .await
+        .unwrap_or_default();
+    if mems.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n## Past context\n{}",
+        mems.iter()
+            .map(|m| format!("- {}", m.content))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }
 
 async fn build_kb_context(q_vec: &Option<Vec<f32>>, store: &KnowledgeStore) -> String {
-    let items = store.search_external(q_vec.as_deref(), None, 3).await.unwrap_or_default();
-    if items.is_empty() { return String::new(); }
-    format!("\n## Knowledge base\n{}", items.iter().map(|k| format!("---\n{}", &k.content[..k.content.len().min(800)])).collect::<Vec<_>>().join("\n"))
+    let items = store
+        .search_external(q_vec.as_deref(), None, 3)
+        .await
+        .unwrap_or_default();
+    if items.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n## Knowledge base\n{}",
+        items
+            .iter()
+            .map(|k| format!("---\n{}", &k.content[..k.content.len().min(800)]))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }
 
 // ── memory ────────────────────────────────────────────────────────────────────
@@ -650,9 +923,16 @@ async fn cmd_memory(action: MemoryAction, path: &PathBuf) -> Result<()> {
     match action {
         MemoryAction::List => {
             let mems = store.recall(None, None, None, 20).await?;
-            if mems.is_empty() { println!("No memories yet."); return Ok(()); }
+            if mems.is_empty() {
+                println!("No memories yet.");
+                return Ok(());
+            }
             for m in &mems {
-                println!("[{}] {}", m.created_at.format("%m-%d %H:%M"), &m.content[..m.content.len().min(120)]);
+                println!(
+                    "[{}] {}",
+                    m.created_at.format("%m-%d %H:%M"),
+                    &m.content[..m.content.len().min(120)]
+                );
             }
             println!("\n{} total", store.count().await?);
         }
@@ -669,7 +949,11 @@ async fn cmd_memory(action: MemoryAction, path: &PathBuf) -> Result<()> {
 
 // ── knowledge ─────────────────────────────────────────────────────────────────
 
-async fn cmd_knowledge(action: KnowledgeAction, path: &PathBuf, provider: Option<&str>) -> Result<()> {
+async fn cmd_knowledge(
+    action: KnowledgeAction,
+    path: &PathBuf,
+    provider: Option<&str>,
+) -> Result<()> {
     let kb = KnowledgeStore::new(&knowledge_db_path(path)).await?;
 
     match action {
@@ -712,7 +996,12 @@ async fn cmd_knowledge(action: KnowledgeAction, path: &PathBuf, provider: Option
                 }
             }
 
-            if let (Some(llm), Some(store), Some(graph), Some(vi)) = (llm.as_deref(), graph_store.as_ref(), graph.as_ref(), vector_index.as_ref()) {
+            if let (Some(llm), Some(store), Some(graph), Some(vi)) = (
+                llm.as_deref(),
+                graph_store.as_ref(),
+                graph.as_ref(),
+                vector_index.as_ref(),
+            ) {
                 let _ = persist_external_knowledge_to_graph(store, vi, llm, graph, &k).await;
             }
 
@@ -721,34 +1010,56 @@ async fn cmd_knowledge(action: KnowledgeAction, path: &PathBuf, provider: Option
 
         KnowledgeAction::List => {
             let items = kb.list_external(20).await?;
-            if items.is_empty() { println!("Knowledge base is empty."); return Ok(()); }
+            if items.is_empty() {
+                println!("Knowledge base is empty.");
+                return Ok(());
+            }
             for item in &items {
                 let src = match &item.source {
                     loci_core::types::KnowledgeSource::File { path } => path.clone(),
                     loci_core::types::KnowledgeSource::Url { url } => url.clone(),
-                    loci_core::types::KnowledgeSource::Conversation { .. } => "[conversation]".to_string(),
+                    loci_core::types::KnowledgeSource::Conversation { .. } => {
+                        "[conversation]".to_string()
+                    }
                     loci_core::types::KnowledgeSource::Auto => "[auto]".to_string(),
                 };
-                println!("[{}] {} ({} chars)", item.created_at.format("%m-%d"), src, item.content.len());
+                println!(
+                    "[{}] {} ({} chars)",
+                    item.created_at.format("%m-%d"),
+                    src,
+                    item.content.len()
+                );
             }
             println!("\n{} total", kb.count().await?);
         }
 
         KnowledgeAction::Search { query } => {
             let cfg = BsConfig::load(path).unwrap_or_default();
-            let q_vec = cfg.build_client(provider).ok()
-                .and_then(|llm| tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(llm.embed(&query)).ok()
-                }));
-            let results = kb.search_external(q_vec.as_deref(), Some(&query), 5).await?;
-            if results.is_empty() { println!("No results."); return Ok(()); }
+            let q_vec = cfg.build_client(provider).ok().and_then(|llm| {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current()
+                        .block_on(llm.embed(&query))
+                        .ok()
+                })
+            });
+            let results = kb
+                .search_external(q_vec.as_deref(), Some(&query), 5)
+                .await?;
+            if results.is_empty() {
+                println!("No results.");
+                return Ok(());
+            }
             for (i, item) in results.iter().enumerate() {
-                println!("\n[{}] {}", i+1, &item.content[..item.content.len().min(300)]);
+                println!(
+                    "\n[{}] {}",
+                    i + 1,
+                    &item.content[..item.content.len().min(300)]
+                );
             }
         }
 
         KnowledgeAction::Watch { dir } => {
-            use notify::{Watcher, RecursiveMode, recommended_watcher, Event, EventKind};
+            use notify::{recommended_watcher, Event, EventKind, RecursiveMode, Watcher};
             use std::sync::mpsc;
 
             println!("Watching {} for changes (Ctrl+C to stop)...", dir.display());
@@ -768,18 +1079,27 @@ async fn cmd_knowledge(action: KnowledgeAction, path: &PathBuf, provider: Option
                                     print!("  Ingesting {}... ", p.display());
                                     let llm = cfg.build_client(None).ok();
                                     let embedding = if let Some(ref llm) = llm {
-                                        std::fs::read_to_string(&p).ok()
-                                            .and_then(|s| tokio::task::block_in_place(|| {
+                                        std::fs::read_to_string(&p).ok().and_then(|s| {
+                                            tokio::task::block_in_place(|| {
                                                 tokio::runtime::Handle::current()
-                                                    .block_on(llm.embed(&s[..s.len().min(2000)])).ok()
-                                            }))
-                                    } else { None };
+                                                    .block_on(llm.embed(&s[..s.len().min(2000)]))
+                                                    .ok()
+                                            })
+                                        })
+                                    } else {
+                                        None
+                                    };
                                     match ingest_file(&kb, &p, embedding, None).await {
                                         Ok(k) => {
                                             if let Some(ref llm) = llm {
-                                                if let Ok(store) = GraphStore::new(&graph_db_path(path)).await {
+                                                if let Ok(store) =
+                                                    GraphStore::new(&graph_db_path(path)).await
+                                                {
                                                     if let Ok(graph) = store.load_graph().await {
-                                                        if let Ok(vi) = VectorIndex::new(store.pool.clone()).await {
+                                                        if let Ok(vi) =
+                                                            VectorIndex::new(store.pool.clone())
+                                                                .await
+                                                        {
                                                             let _ = persist_external_knowledge_to_graph(&store, &vi, &**llm, &graph, &k).await;
                                                         }
                                                     }
@@ -802,30 +1122,46 @@ async fn cmd_knowledge(action: KnowledgeAction, path: &PathBuf, provider: Option
 
 // ── skill ─────────────────────────────────────────────────────────────────────
 
-async fn cmd_skill(name: Option<&str>, input: Option<&str>, path: &PathBuf, provider: Option<&str>) -> Result<()> {
+async fn cmd_skill(
+    name: Option<&str>,
+    input: Option<&str>,
+    path: &PathBuf,
+    provider: Option<&str>,
+) -> Result<()> {
     let registry = SkillRegistry::default();
 
     // List skills if no name given
     let skill_name = match name {
         None => {
             println!("Available skills:");
-            for (n, d) in registry.list() { println!("  {:20} {}", n, d); }
+            for (n, d) in registry.list() {
+                println!("  {:20} {}", n, d);
+            }
             return Ok(());
         }
         Some(n) => n,
     };
 
-    let skill = registry.get(skill_name)
-        .ok_or_else(|| anyhow::anyhow!("Unknown skill '{}'. Run `loci skill` to list.", skill_name))?;
+    let skill = registry.get(skill_name).ok_or_else(|| {
+        anyhow::anyhow!("Unknown skill '{}'. Run `loci skill` to list.", skill_name)
+    })?;
 
     // Read input
     let content = match input {
-        Some("-") => { use std::io::Read; let mut s = String::new(); std::io::stdin().read_to_string(&mut s)?; s }
+        Some("-") => {
+            use std::io::Read;
+            let mut s = String::new();
+            std::io::stdin().read_to_string(&mut s)?;
+            s
+        }
         Some(file) => std::fs::read_to_string(file)?,
         None => {
             // For commit_message / pr_description, default to git diff
             if matches!(skill_name, "commit_message" | "pr_description") {
-                let out = std::process::Command::new("git").args(["diff", "HEAD"]).current_dir(path).output()?;
+                let out = std::process::Command::new("git")
+                    .args(["diff", "HEAD"])
+                    .current_dir(path)
+                    .output()?;
                 String::from_utf8_lossy(&out.stdout).to_string()
             } else {
                 anyhow::bail!("Provide --input <file> or pipe content via stdin");
@@ -835,7 +1171,10 @@ async fn cmd_skill(name: Option<&str>, input: Option<&str>, path: &PathBuf, prov
 
     let cfg = BsConfig::load(path).unwrap_or_default();
     let llm = require_llm(&cfg, provider)?;
-    let ctx = loci_tools::ToolContext { working_dir: Some(path.to_string_lossy().to_string()), ..Default::default() };
+    let ctx = loci_tools::ToolContext {
+        working_dir: Some(path.to_string_lossy().to_string()),
+        ..Default::default()
+    };
 
     let result = skill.run(&content, &*llm, &ctx).await?;
     println!("{}", result);
@@ -851,10 +1190,14 @@ struct ProjectRegistry {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
-struct ProjectEntry { name: String, path: String }
+struct ProjectEntry {
+    name: String,
+    path: String,
+}
 
 fn registry_path() -> std::path::PathBuf {
-    let dir = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/bs");
+    let dir =
+        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/bs");
     std::fs::create_dir_all(&dir).ok();
     dir.join("projects.json")
 }
@@ -879,14 +1222,21 @@ async fn cmd_project(action: ProjectAction) -> Result<()> {
             let path = resolve_command_path(path)?;
             let abs = std::fs::canonicalize(&path)
                 .unwrap_or(path.clone())
-                .to_string_lossy().to_string();
+                .to_string_lossy()
+                .to_string();
             reg.projects.retain(|p| p.name != name);
-            reg.projects.push(ProjectEntry { name: name.clone(), path: abs.clone() });
+            reg.projects.push(ProjectEntry {
+                name: name.clone(),
+                path: abs.clone(),
+            });
             save_registry(&reg);
             println!("Added project '{}' → {}", name, abs);
         }
         ProjectAction::List => {
-            if reg.projects.is_empty() { println!("No projects registered."); return Ok(()); }
+            if reg.projects.is_empty() {
+                println!("No projects registered.");
+                return Ok(());
+            }
             for p in &reg.projects {
                 let active = reg.active.as_deref() == Some(&p.name);
                 println!("{} {} → {}", if active { "▶" } else { " " }, p.name, p.path);
@@ -894,7 +1244,11 @@ async fn cmd_project(action: ProjectAction) -> Result<()> {
         }
         ProjectAction::Use { name } => {
             if !reg.projects.iter().any(|p| p.name == name) {
-                anyhow::bail!("Project '{}' not found. Run `loci project add {}`", name, name);
+                anyhow::bail!(
+                    "Project '{}' not found. Run `loci project add {}`",
+                    name,
+                    name
+                );
             }
             reg.active = Some(name.clone());
             save_registry(&reg);
@@ -902,7 +1256,9 @@ async fn cmd_project(action: ProjectAction) -> Result<()> {
         }
         ProjectAction::Remove { name } => {
             reg.projects.retain(|p| p.name != name);
-            if reg.active.as_deref() == Some(&name) { reg.active = None; }
+            if reg.active.as_deref() == Some(&name) {
+                reg.active = None;
+            }
             save_registry(&reg);
             println!("Removed project '{}'", name);
         }
@@ -913,26 +1269,42 @@ async fn cmd_project(action: ProjectAction) -> Result<()> {
 // ── serve ─────────────────────────────────────────────────────────────────────
 
 async fn cmd_serve(path: &PathBuf, port: u16, provider: Option<&str>) -> Result<()> {
-    use axum::{Router, routing::{post, get}, Json, extract::State};
+    use axum::{
+        extract::State,
+        routing::{get, post},
+        Json, Router,
+    };
     use std::sync::Arc;
     #[derive(serde::Deserialize)]
-    struct AskReq { question: String, provider: Option<String> }
+    struct AskReq {
+        question: String,
+        provider: Option<String>,
+    }
     #[derive(serde::Serialize)]
-    struct AskResp { answer: String }
+    struct AskResp {
+        answer: String,
+    }
 
     #[derive(Clone)]
-    struct Srv { path: PathBuf, provider: Option<String> }
+    struct Srv {
+        path: PathBuf,
+        provider: Option<String>,
+    }
 
-    let srv = Arc::new(Srv { path: path.clone(), provider: provider.map(String::from) });
+    let srv = Arc::new(Srv {
+        path: path.clone(),
+        provider: provider.map(String::from),
+    });
 
     // File watcher — auto re-index on changes
     let watch_path = path.clone();
     tokio::spawn(async move {
-        use notify::{Watcher, RecursiveMode, recommended_watcher, Event, EventKind};
+        use notify::{recommended_watcher, Event, EventKind, RecursiveMode, Watcher};
         use std::sync::mpsc;
         let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
         let mut watcher = match recommended_watcher(tx) {
-            Ok(w) => w, Err(_) => return,
+            Ok(w) => w,
+            Err(_) => return,
         };
         let _ = watcher.watch(&watch_path, RecursiveMode::Recursive);
         let mut last_reindex = std::time::Instant::now();
@@ -943,9 +1315,16 @@ async fn cmd_serve(path: &PathBuf, port: u16, provider: Option<&str>) -> Result<
                     if last_reindex.elapsed().as_secs() > 5 {
                         last_reindex = std::time::Instant::now();
                         if let Ok(mut index) = loci_codebase::CodebaseIndexer::index(&watch_path) {
-                            let ts = std::fs::read_to_string(bs_dir(&watch_path).join("last_index"))
-                                .ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
-                            let _ = loci_codebase::CodebaseIndexer::index_incremental(&watch_path, &mut index, ts);
+                            let ts =
+                                std::fs::read_to_string(bs_dir(&watch_path).join("last_index"))
+                                    .ok()
+                                    .and_then(|s| s.trim().parse().ok())
+                                    .unwrap_or(0);
+                            let _ = loci_codebase::CodebaseIndexer::index_incremental(
+                                &watch_path,
+                                &mut index,
+                                ts,
+                            );
                             // Rebuild graph in background (fire and forget)
                             let wp = watch_path.clone();
                             let idx = index;
@@ -961,10 +1340,7 @@ async fn cmd_serve(path: &PathBuf, port: u16, provider: Option<&str>) -> Result<
     });
 
     // HTTP handlers
-    async fn handle_ask(
-        State(srv): State<Arc<Srv>>,
-        Json(req): Json<AskReq>,
-    ) -> Json<AskResp> {
+    async fn handle_ask(State(srv): State<Arc<Srv>>, Json(req): Json<AskReq>) -> Json<AskResp> {
         let provider = req.provider.as_deref().or(srv.provider.as_deref());
         let cfg = BsConfig::load(&srv.path).unwrap_or_default();
         let answer = match cfg.build_client(provider) {
@@ -973,20 +1349,34 @@ async fn cmd_serve(path: &PathBuf, port: u16, provider: Option<&str>) -> Result<
                 let store = GraphStore::new(&graph_db_path(&srv.path)).await.unwrap();
                 let graph = store.load_graph().await.unwrap_or_default();
                 let mem_store = MemoryStore::new(&memory_db_path(&srv.path)).await.unwrap();
-                let kb_store  = KnowledgeStore::new(&knowledge_db_path(&srv.path)).await.unwrap();
+                let kb_store = KnowledgeStore::new(&knowledge_db_path(&srv.path))
+                    .await
+                    .unwrap();
                 let vi = VectorIndex::new(store.pool.clone()).await.unwrap();
                 let has_emb = vi.count().await.unwrap_or(0) > 0;
-                do_ask(&req.question, &*llm, &graph, &store, &vi, has_emb, &mem_store, &kb_store)
-                    .await.unwrap_or_else(|e| e.to_string())
+                do_ask(
+                    &req.question,
+                    &*llm,
+                    &graph,
+                    &store,
+                    &vi,
+                    has_emb,
+                    &mem_store,
+                    &kb_store,
+                )
+                .await
+                .unwrap_or_else(|e| e.to_string())
             }
         };
         Json(AskResp { answer })
     }
 
-    async fn handle_health() -> &'static str { "ok" }
+    async fn handle_health() -> &'static str {
+        "ok"
+    }
 
     let app = Router::new()
-        .route("/ask",    post(handle_ask))
+        .route("/ask", post(handle_ask))
         .route("/health", get(handle_health))
         .with_state(srv);
 
@@ -999,6 +1389,57 @@ async fn cmd_serve(path: &PathBuf, port: u16, provider: Option<&str>) -> Result<
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn cmd_model(action: ModelAction, path: &PathBuf, provider: Option<&str>) -> Result<()> {
+    match action {
+        ModelAction::List => {
+            let cfg = BsConfig::load(path).unwrap_or_default();
+            let names = cfg.provider_names();
+            if names.is_empty() {
+                println!(
+                    "No providers configured. Create .bs/config.toml from config.example.toml."
+                );
+                return Ok(());
+            }
+            println!(
+                "Default provider: {}",
+                cfg.default_provider.as_deref().unwrap_or("未设置")
+            );
+            for name in names {
+                println!("- {}", name);
+            }
+            Ok(())
+        }
+        ModelAction::Test => {
+            let cfg = BsConfig::load(path).unwrap_or_default();
+            let llm = require_llm(&cfg, provider)?;
+            let provider_name = provider
+                .map(str::to_string)
+                .or(cfg.default_provider.clone())
+                .unwrap_or_else(|| "default".to_string());
+            let response = llm
+                .chat(
+                    vec![Message {
+                        role: Role::User,
+                        content: "Reply with a short confirmation that the model connection works."
+                            .to_string(),
+                    }],
+                    None,
+                )
+                .await?;
+            let text = match response {
+                loci_llm::LlmResponse::Text(text) => text,
+                _ => "Received a non-text response from the model.".to_string(),
+            };
+            println!("Connection OK");
+            println!("Provider: {}", provider_name);
+            println!("Model: {}", llm.model());
+            println!();
+            println!("{}", text);
+            Ok(())
+        }
+    }
 }
 
 async fn build_graph_static(path: &PathBuf, index: &loci_codebase::CodebaseIndex) -> Result<()> {
@@ -1018,7 +1459,9 @@ async fn cmd_explain(target: &str, path: &PathBuf, provider: Option<&str>) -> Re
         let store = GraphStore::new(&graph_db_path(path)).await?;
         let graph = store.load_graph().await?;
         let vi = VectorIndex::new(store.pool.clone()).await?;
-        let anchors: Vec<Uuid> = graph.nodes.iter()
+        let anchors: Vec<Uuid> = graph
+            .nodes
+            .iter()
             .filter(|n| n.kind == NodeKind::File && n.file_path.as_deref() == Some(target))
             .map(|n| n.id)
             .collect();
@@ -1030,16 +1473,24 @@ async fn cmd_explain(target: &str, path: &PathBuf, provider: Option<&str>) -> Re
             &anchors,
             &format!("Decision: {}", target),
             &report,
-        ).await;
-        println!("{}", report.to_markdown(&format!("Trace Report: {}", target)));
+        )
+        .await;
+        println!(
+            "{}",
+            report.to_markdown(&format!("Trace Report: {}", target))
+        );
         return Ok(());
     }
 
     // Symbol lookup from graph remains as a lightweight explore path.
     let store = GraphStore::new(&graph_db_path(path)).await?;
     let graph = store.load_graph().await?;
-    let node = graph.find_node_by_name(target)
-        .ok_or_else(|| anyhow::anyhow!("'{}' not found as file or indexed symbol. Run `loci index` first.", target))?;
+    let node = graph.find_node_by_name(target).ok_or_else(|| {
+        anyhow::anyhow!(
+            "'{}' not found as file or indexed symbol. Run `loci index` first.",
+            target
+        )
+    })?;
 
     let neighbors = graph.neighbors(node.id);
     let prompt = format!(
@@ -1050,12 +1501,26 @@ async fn cmd_explain(target: &str, path: &PathBuf, provider: Option<&str>) -> Re
         node.name,
         node.kind,
         node.file_path.as_deref().unwrap_or("unknown"),
-        neighbors.iter().map(|(_, n)| n.name.as_str()).collect::<Vec<_>>().join(", "),
+        neighbors
+            .iter()
+            .map(|(_, n)| n.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
         node.description.as_deref().unwrap_or("")
     );
 
-    let response = llm.chat(vec![Message { role: Role::User, content: prompt }], None).await?;
-    if let loci_llm::LlmResponse::Text(t) = response { println!("{}", t); }
+    let response = llm
+        .chat(
+            vec![Message {
+                role: Role::User,
+                content: prompt,
+            }],
+            None,
+        )
+        .await?;
+    if let loci_llm::LlmResponse::Text(t) = response {
+        println!("{}", t);
+    }
     Ok(())
 }
 
@@ -1092,7 +1557,9 @@ async fn cmd_diff(commit: &str, path: &PathBuf, provider: Option<&str>) -> Resul
     let store = GraphStore::new(&graph_db_path(path)).await?;
     let graph = store.load_graph().await?;
     let vi = VectorIndex::new(store.pool.clone()).await?;
-    let anchors: Vec<Uuid> = graph.nodes.iter()
+    let anchors: Vec<Uuid> = graph
+        .nodes
+        .iter()
         .filter(|n| n.kind == NodeKind::Commit && (n.name == commit || n.name.starts_with(commit)))
         .map(|n| n.id)
         .collect();
@@ -1104,8 +1571,12 @@ async fn cmd_diff(commit: &str, path: &PathBuf, provider: Option<&str>) -> Resul
         &anchors,
         &format!("Decision: diff {}", commit),
         &report,
-    ).await;
-    println!("{}", report.to_markdown(&format!("Trace Report: diff {}", commit)));
+    )
+    .await;
+    println!(
+        "{}",
+        report.to_markdown(&format!("Trace Report: diff {}", commit))
+    );
     Ok(())
 }
 
@@ -1114,7 +1585,10 @@ async fn cmd_diff(commit: &str, path: &PathBuf, provider: Option<&str>) -> Resul
 async fn cmd_graph(path: &PathBuf) -> Result<()> {
     let store = GraphStore::new(&graph_db_path(path)).await?;
     let graph = store.load_graph().await?;
-    if graph.nodes.is_empty() { println!("No index. Run `loci index` first."); return Ok(()); }
+    if graph.nodes.is_empty() {
+        println!("No index. Run `loci index` first.");
+        return Ok(());
+    }
     println!("{}", graph.to_context_str(None));
     Ok(())
 }
@@ -1143,12 +1617,15 @@ async fn cmd_trace(target: &str, path: &PathBuf) -> Result<()> {
     }
 
     let anchor = if std::path::Path::new(target).exists() {
-        graph.nodes.iter().find(|n| n.kind == NodeKind::File && n.file_path.as_deref() == Some(target))
+        graph
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::File && n.file_path.as_deref() == Some(target))
     } else {
-        graph.nodes.iter().find(|n|
-            (n.kind == NodeKind::Commit && (n.name == target || n.name.starts_with(target))) ||
-            n.name.eq_ignore_ascii_case(target)
-        )
+        graph.nodes.iter().find(|n| {
+            (n.kind == NodeKind::Commit && (n.name == target || n.name.starts_with(target)))
+                || n.name.eq_ignore_ascii_case(target)
+        })
     };
 
     let Some(anchor) = anchor else {
@@ -1161,13 +1638,19 @@ async fn cmd_trace(target: &str, path: &PathBuf) -> Result<()> {
         ids.insert(node.id);
     }
 
-    let decisions: Vec<&Node> = graph.nodes.iter()
+    let decisions: Vec<&Node> = graph
+        .nodes
+        .iter()
         .filter(|n| ids.contains(&n.id) && n.kind == NodeKind::Decision)
         .collect();
-    let commits: Vec<&Node> = graph.nodes.iter()
+    let commits: Vec<&Node> = graph
+        .nodes
+        .iter()
         .filter(|n| ids.contains(&n.id) && n.kind == NodeKind::Commit)
         .collect();
-    let related: Vec<&Node> = graph.nodes.iter()
+    let related: Vec<&Node> = graph
+        .nodes
+        .iter()
         .filter(|n| ids.contains(&n.id) && !matches!(n.kind, NodeKind::Decision | NodeKind::Commit))
         .collect();
 
@@ -1183,7 +1666,9 @@ async fn cmd_trace(target: &str, path: &PathBuf) -> Result<()> {
                 println!("  {}", desc);
             }
 
-            let evidence_edges: Vec<&Edge> = graph.edges.iter()
+            let evidence_edges: Vec<&Edge> = graph
+                .edges
+                .iter()
                 .filter(|e| e.from == decision.id && is_evidence_edge(&e.kind))
                 .collect();
             if !evidence_edges.is_empty() {
@@ -1194,7 +1679,10 @@ async fn cmd_trace(target: &str, path: &PathBuf) -> Result<()> {
                             "  - {} ({:?}) [{}]",
                             node.name,
                             node.kind,
-                            edge_kind_label(&edge.kind, edge.label.as_deref().unwrap_or("evidence"))
+                            edge_kind_label(
+                                &edge.kind,
+                                edge.label.as_deref().unwrap_or("evidence")
+                            )
                         );
                     }
                 }
@@ -1235,24 +1723,42 @@ async fn cmd_doc(kind: &str, path: &PathBuf, provider: Option<&str>) -> Result<(
         return Ok(());
     }
 
-    let decisions: Vec<&Node> = graph.nodes.iter()
+    let decisions: Vec<&Node> = graph
+        .nodes
+        .iter()
         .filter(|n| n.kind == NodeKind::Decision)
         .take(12)
         .collect();
-    let concepts: Vec<&Node> = graph.nodes.iter()
+    let concepts: Vec<&Node> = graph
+        .nodes
+        .iter()
         .filter(|n| n.kind == NodeKind::Concept)
         .take(12)
         .collect();
-    let files: Vec<&Node> = graph.nodes.iter()
+    let files: Vec<&Node> = graph
+        .nodes
+        .iter()
         .filter(|n| n.kind == NodeKind::File)
         .take(12)
         .collect();
 
     let context = format!(
         "## Decisions\n{}\n\n## Concepts\n{}\n\n## Files\n{}",
-        decisions.iter().map(|n| format!("- {}: {}", n.name, n.description.as_deref().unwrap_or(""))).collect::<Vec<_>>().join("\n"),
-        concepts.iter().map(|n| format!("- {}: {}", n.name, n.description.as_deref().unwrap_or(""))).collect::<Vec<_>>().join("\n"),
-        files.iter().map(|n| format!("- {}", n.name)).collect::<Vec<_>>().join("\n"),
+        decisions
+            .iter()
+            .map(|n| format!("- {}: {}", n.name, n.description.as_deref().unwrap_or("")))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        concepts
+            .iter()
+            .map(|n| format!("- {}: {}", n.name, n.description.as_deref().unwrap_or("")))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        files
+            .iter()
+            .map(|n| format!("- {}", n.name))
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
 
     let prompt = match kind {
@@ -1276,7 +1782,15 @@ async fn cmd_doc(kind: &str, path: &PathBuf, provider: Option<&str>) -> Result<(
         ),
     };
 
-    let response = llm.chat(vec![Message { role: Role::User, content: prompt }], None).await?;
+    let response = llm
+        .chat(
+            vec![Message {
+                role: Role::User,
+                content: prompt,
+            }],
+            None,
+        )
+        .await?;
     if let loci_llm::LlmResponse::Text(t) = response {
         println!("{}", t);
     }
@@ -1346,12 +1860,15 @@ async fn cmd_eval(path: &PathBuf, provider: Option<&str>, output: Option<&PathBu
             has_embeddings,
             &mem_store,
             &kb_store,
-        ).await?;
+        )
+        .await?;
 
-        let score = score_eval_answer(&*llm, &sample, &answer).await.unwrap_or_else(|_| EvalScore {
-            score: 0,
-            rationale: "Scoring failed.".to_string(),
-        });
+        let score = score_eval_answer(&*llm, &sample, &answer)
+            .await
+            .unwrap_or_else(|_| EvalScore {
+                score: 0,
+                rationale: "Scoring failed.".to_string(),
+            });
 
         println!("## {}\n", sample.category);
         println!("**Prompt:** {}\n", sample.prompt);
@@ -1393,7 +1910,9 @@ async fn cmd_eval(path: &PathBuf, provider: Option<&str>, output: Option<&PathBu
     };
 
     let out_path = output.cloned().unwrap_or_else(|| {
-        bs_dir(path).join("eval").join(format!("report-{}.md", Utc::now().format("%Y%m%d-%H%M%S")))
+        bs_dir(path)
+            .join("eval")
+            .join(format!("report-{}.md", Utc::now().format("%Y%m%d-%H%M%S")))
     });
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1407,7 +1926,11 @@ async fn cmd_eval(path: &PathBuf, provider: Option<&str>, output: Option<&PathBu
     Ok(())
 }
 
-async fn score_eval_answer(llm: &dyn LlmClient, sample: &EvalSample, answer: &str) -> Result<EvalScore> {
+async fn score_eval_answer(
+    llm: &dyn LlmClient,
+    sample: &EvalSample,
+    answer: &str,
+) -> Result<EvalScore> {
     let prompt = format!(
         "Score this codebase-understanding answer on a 0-5 scale.\n\
          Judge accuracy, specificity, use of design decisions/concepts, and usefulness to a developer.\n\
@@ -1418,12 +1941,21 @@ async fn score_eval_answer(llm: &dyn LlmClient, sample: &EvalSample, answer: &st
         &answer[..answer.len().min(4000)]
     );
 
-    let response = llm.chat(vec![Message { role: Role::User, content: prompt }], None).await?;
+    let response = llm
+        .chat(
+            vec![Message {
+                role: Role::User,
+                content: prompt,
+            }],
+            None,
+        )
+        .await?;
     match response {
-        loci_llm::LlmResponse::Text(text) => Ok(serde_json::from_str::<EvalScore>(&text).unwrap_or_else(|_| EvalScore {
-            score: 0,
-            rationale: text,
-        })),
+        loci_llm::LlmResponse::Text(text) => Ok(serde_json::from_str::<EvalScore>(&text)
+            .unwrap_or_else(|_| EvalScore {
+                score: 0,
+                rationale: text,
+            })),
         _ => Ok(EvalScore {
             score: 0,
             rationale: "Scorer returned non-text output.".to_string(),
@@ -1436,7 +1968,10 @@ fn render_eval_report(report: &EvalReport) -> String {
     out.push_str("# Evaluation Report\n\n");
     out.push_str(&format!("- Generated: {}\n", report.generated_at));
     out.push_str(&format!("- Project: {}\n", report.project_path));
-    out.push_str(&format!("- Average score: {:.2}/5\n\n", report.average_score));
+    out.push_str(&format!(
+        "- Average score: {:.2}/5\n\n",
+        report.average_score
+    ));
 
     for result in &report.results {
         out.push_str(&format!("## {}\n\n", result.category));
@@ -1483,7 +2018,8 @@ fn load_eval_samples(project_path: &PathBuf) -> Result<Vec<EvalSample>> {
 
 fn load_previous_eval_report(project_path: &PathBuf) -> Option<EvalReport> {
     let eval_dir = bs_dir(project_path).join("eval");
-    let mut reports: Vec<std::path::PathBuf> = std::fs::read_dir(&eval_dir).ok()?
+    let mut reports: Vec<std::path::PathBuf> = std::fs::read_dir(&eval_dir)
+        .ok()?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|p| p.extension().and_then(|ext| ext.to_str()) == Some("json"))
         .collect();
@@ -1496,7 +2032,9 @@ fn load_previous_eval_report(project_path: &PathBuf) -> Option<EvalReport> {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn bs_dir(p: &PathBuf) -> PathBuf {
-    let d = p.join(".bs"); std::fs::create_dir_all(&d).ok(); d
+    let d = p.join(".bs");
+    std::fs::create_dir_all(&d).ok();
+    d
 }
 
 fn resolve_command_path(path: Option<PathBuf>) -> Result<PathBuf> {
@@ -1516,9 +2054,15 @@ fn active_project_path() -> Option<PathBuf> {
         .map(|p| PathBuf::from(p.path))
 }
 
-fn graph_db_path(p: &PathBuf)     -> String { bs_dir(p).join("graph.db").to_string_lossy().to_string() }
-fn memory_db_path(p: &PathBuf)    -> String { bs_dir(p).join("memory.db").to_string_lossy().to_string() }
-fn knowledge_db_path(p: &PathBuf) -> String { bs_dir(p).join("knowledge.db").to_string_lossy().to_string() }
+fn graph_db_path(p: &PathBuf) -> String {
+    bs_dir(p).join("graph.db").to_string_lossy().to_string()
+}
+fn memory_db_path(p: &PathBuf) -> String {
+    bs_dir(p).join("memory.db").to_string_lossy().to_string()
+}
+fn knowledge_db_path(p: &PathBuf) -> String {
+    bs_dir(p).join("knowledge.db").to_string_lossy().to_string()
+}
 
 async fn persist_trace_decision(
     store: &GraphStore,
@@ -1579,9 +2123,14 @@ async fn persist_trace_evidence_edges(
             edge_kind = Some(EdgeKind::EvidenceFromCommit);
             for hash in extract_commit_hashes(&evidence.detail) {
                 matched_ids.extend(
-                    graph.nodes.iter()
-                        .filter(|n| n.kind == NodeKind::Commit && (n.name == hash || n.name.starts_with(&hash)))
-                        .map(|n| n.id)
+                    graph
+                        .nodes
+                        .iter()
+                        .filter(|n| {
+                            n.kind == NodeKind::Commit
+                                && (n.name == hash || n.name.starts_with(&hash))
+                        })
+                        .map(|n| n.id),
                 );
             }
         }
@@ -1598,7 +2147,9 @@ async fn persist_trace_evidence_edges(
                 EdgeKind::EvidenceFromConcept
             });
             matched_ids.extend(
-                graph.nodes.iter()
+                graph
+                    .nodes
+                    .iter()
                     .filter(|n| matches!(n.kind, NodeKind::Concept | NodeKind::Decision))
                     .filter(|n| {
                         let name = n.name.to_lowercase();
@@ -1606,7 +2157,7 @@ async fn persist_trace_evidence_edges(
                         let detail = evidence.detail.to_lowercase();
                         detail.contains(&name) || (!desc.is_empty() && detail.contains(&desc))
                     })
-                    .map(|n| n.id)
+                    .map(|n| n.id),
             );
         }
 
@@ -1650,7 +2201,16 @@ async fn persist_external_knowledge_to_graph(
         &knowledge.content[..knowledge.content.len().min(3000)]
     );
 
-    let extracted = match llm.chat(vec![Message { role: Role::User, content: prompt }], None).await? {
+    let extracted = match llm
+        .chat(
+            vec![Message {
+                role: Role::User,
+                content: prompt,
+            }],
+            None,
+        )
+        .await?
+    {
         loci_llm::LlmResponse::Text(text) => text.trim().to_string(),
         _ => "SKIP".to_string(),
     };
@@ -1662,7 +2222,10 @@ async fn persist_external_knowledge_to_graph(
     let node = Node {
         id: Uuid::new_v4(),
         kind: NodeKind::Concept,
-        name: format!("External: {}", source_label.chars().take(80).collect::<String>()),
+        name: format!(
+            "External: {}",
+            source_label.chars().take(80).collect::<String>()
+        ),
         file_path: None,
         description: Some(extracted.clone()),
         raw_source: Some(knowledge.content[..knowledge.content.len().min(3000)].to_string()),
@@ -1676,7 +2239,9 @@ async fn persist_external_knowledge_to_graph(
 
     match &knowledge.source {
         loci_core::types::KnowledgeSource::File { path } => {
-            for file_node in graph.nodes.iter().filter(|n| n.kind == NodeKind::File && n.file_path.as_deref() == Some(path.as_str())) {
+            for file_node in graph.nodes.iter().filter(|n| {
+                n.kind == NodeKind::File && n.file_path.as_deref() == Some(path.as_str())
+            }) {
                 let edge = Edge {
                     id: Uuid::new_v4(),
                     from: file_node.id,
@@ -1742,6 +2307,9 @@ fn require_llm(cfg: &BsConfig, provider: Option<&str>) -> Result<Box<dyn LlmClie
     cfg.build_client(provider).map_err(|_| {
         eprintln!("No LLM configured. Create .bs/config.toml:");
         eprintln!("  cp config.example.toml .bs/config.toml");
+        eprintln!(
+            "Recommended: configure a LiteLLM gateway provider and set it as default_provider."
+        );
         anyhow::anyhow!("LLM not configured")
     })
 }
@@ -1752,7 +2320,8 @@ mod tests {
 
     #[test]
     fn extracts_commit_hashes_from_mixed_text() {
-        let hashes = extract_commit_hashes("commit b841111 fixed it, follow-up 2676630 touched graph");
+        let hashes =
+            extract_commit_hashes("commit b841111 fixed it, follow-up 2676630 touched graph");
         assert_eq!(hashes, vec!["b841111".to_string(), "2676630".to_string()]);
     }
 

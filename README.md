@@ -73,21 +73,32 @@ LLM provider 可以通过环境变量或配置文件提供。推荐复制 [confi
 - 项目级：`.bs/config.toml`
 - 全局：`~/.config/bs/config.toml`
 
+推荐优先级：
+
+1. `LiteLLM` 统一网关
+2. 直接连接 OpenAI-compatible 服务
+3. 直接连接 Anthropic Messages API
+
+最推荐的生产方案是让 `loci desktop` 和 CLI 都指向同一个 LiteLLM 网关，这样模型切换、鉴权和多 provider 管理都在 LiteLLM 里完成，`loci` 只维护项目级默认 provider。
+
 示例：
 
 ```toml
-default_provider = "openai"
+default_provider = "litellm"
 
 [[providers]]
-name = "openai"
-model = "gpt-4o"
-api_key_env = "OPENAI_API_KEY"
+name = "litellm"
+protocol = "litellm"
+base_url = "http://localhost:4000/v1"
+model = "gpt-4o-mini"
+api_key_env = "LITELLM_API_KEY"
 ```
 
 也可以直接使用环境变量：
 
 ```bash
 export OPENAI_API_KEY=sk-...
+export LITELLM_API_KEY=sk-...
 ```
 
 ## 命令行快速开始
@@ -119,6 +130,15 @@ loci ask "这个项目的核心模块是什么？"
 ```bash
 # 索引项目
 loci index .
+
+# 查看当前可用 provider
+loci model list
+
+# 测试默认 provider 连接
+loci model test
+
+# 测试指定 provider 连接
+loci model test --provider litellm
 
 # 询问代码库
 loci ask "这个项目的核心模块是什么？" --path .

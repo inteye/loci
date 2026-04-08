@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { open } from '@tauri-apps/plugin-dialog'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 type Panel = 'chat' | 'settings' | 'trace' | 'docs' | 'eval' | 'graph' | 'memory'
 type Operation = 'project' | 'index' | 'ask' | 'settings' | 'trace' | 'docs' | 'eval' | 'graph' | 'memory'
 type AsyncState = 'idle' | 'loading' | 'success' | 'error'
-type ProviderProtocol = 'openai' | 'anthropic'
+type ProviderProtocol = 'openai' | 'litellm' | 'anthropic'
 
 interface GraphNode {
   id: string
@@ -93,7 +92,7 @@ const panelHelp: Record<Panel, { title: string; description: string }> = {
   },
   settings: {
     title: '模型设置',
-    description: '可视化管理默认模型、API 协议、Base URL、模型名和密钥来源，保存到项目级 .bs/config.toml。',
+    description: '管理默认模型、协议类型、Base URL 和密钥来源。这里是桌面端能否正常工作的基础设置。',
   },
   trace: {
     title: '追溯分析',
@@ -139,12 +138,17 @@ const protocolOptions: Array<{ value: ProviderProtocol; label: string; helper: s
   {
     value: 'openai',
     label: 'OpenAI 协议',
-    helper: '适用于 OpenAI 兼容接口，例如 OpenAI、Ollama、OpenRouter、Groq、DeepSeek、LM Studio。',
+    helper: '适用于 OpenAI、OpenRouter、Ollama、Groq、DeepSeek、LM Studio 等兼容 `/v1` 接口的服务。',
+  },
+  {
+    value: 'litellm',
+    label: 'LiteLLM 网关',
+    helper: '推荐生产接入方式。通过 LiteLLM 统一接入多模型，再由 loci 只对接一个 OpenAI 兼容网关地址。',
   },
   {
     value: 'anthropic',
     label: 'Anthropic 协议',
-    helper: '适用于 Anthropic Messages API 或兼容该协议的自定义服务。',
+    helper: '适用于 Anthropic Messages API 或兼容其消息协议的服务。',
   },
 ]
 
@@ -175,7 +179,7 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([
     makeMessage(
       'system',
-      '先选择项目并完成索引，再到“模型设置”中配置默认模型，然后在这里提问架构、追溯原因、设计决策或新同事上手问题。',
+      '先选择项目并完成索引，再确认顶部的模型设置已经可用，然后在这里提问架构、追溯原因、设计决策或新人上手问题。',
       '欢迎使用',
     ),
   ])
@@ -187,6 +191,8 @@ export default function App() {
   const [evalData, setEvalData] = useState<EvalData | null>(null)
   const [memories, setMemories] = useState<string[]>([])
   const [settings, setSettings] = useState<ModelSettingsData | null>(null)
+  const [settingsExpanded, setSettingsExpanded] = useState(true)
+  const [settingsTestResult, setSettingsTestResult] = useState<string>('')
   const [statuses, setStatuses] = useState<Record<Operation, StatusEntry>>(statusDefaults)
 
   const activeStatus = useMemo(() => {
@@ -195,6 +201,7 @@ export default function App() {
   }, [statuses])
 
   const defaultProviderName = settings?.default_provider ?? settings?.providers[0]?.name ?? '未设置'
+  const needsSettingsAttention = !settings || settings.providers.length === 0 || defaultProviderName === '未设置'
 
   useEffect(() => {
     invoke<string>('get_default_project_path')
@@ -214,9 +221,16 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (panel === 'settings' && !settings && statuses.settings.state === 'idle') {
-      void loadSettings()
+    void loadSettings()
+  }, [projectPath])
+
+  useEffect(() => {
+    if (needsSettingsAttention) {
+      setSettingsExpanded(true)
     }
+  }, [needsSettingsAttention])
+
+  useEffect(() => {
     if (panel === 'trace' && !trace && statuses.trace.state === 'idle') {
       void loadTrace(traceTarget)
     }
@@ -253,12 +267,8 @@ export default function App() {
   async function handlePickProjectPath() {
     updateStatus('project', 'loading', '正在打开项目目录选择器...')
     try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: '选择项目目录',
-      })
-      if (!selected || Array.isArray(selected)) {
+      const selected = await invoke<string | null>('pick_project_directory')
+      if (!selected) {
         updateStatus('project', 'idle', '已取消项目目录选择。')
         return
       }
@@ -278,7 +288,11 @@ export default function App() {
     updateStatus('index', 'loading', '正在索引项目并重建本地图谱...')
     try {
       const result = await invoke<string>('index_project', { projectPath })
-      resetProjectViews()
+      setGraph(null)
+      setTrace(null)
+      setDoc(null)
+      setEvalData(null)
+      setMemories([])
       setMessages((prev) => [
         ...prev,
         makeMessage('system', `索引完成。\n\n${result}`, '索引完成'),
@@ -340,6 +354,7 @@ export default function App() {
         settings,
       })
       updateStatus('settings', 'success', message)
+      setSettingsExpanded(false)
       setMessages((prev) => [
         ...prev,
         makeMessage('system', `${message}\n\n默认模型：${settings.default_provider ?? settings.providers[0]?.name ?? '未设置'}`, '设置已保存'),
@@ -349,20 +364,40 @@ export default function App() {
     }
   }
 
+  async function testSettingsConnection(provider?: string | null) {
+    updateStatus('settings', 'loading', '正在测试模型连接...')
+    try {
+      const result = await invoke<string>('test_model_connection', {
+        projectPath,
+        provider: provider ?? null,
+      })
+      setSettingsTestResult(result)
+      updateStatus('settings', 'success', '模型连接测试成功。')
+    } catch (error) {
+      setSettingsTestResult('')
+      updateStatus('settings', 'error', `连接测试失败：${String(error)}`)
+    }
+  }
+
   function updateProvider(index: number, field: keyof ProviderSettingsData, value: string) {
     setSettings((prev) => {
       if (!prev) return prev
       const providers = [...prev.providers]
       const current = providers[index]
       if (!current) return prev
+      const nextName = field === 'name' ? value : current.name
       providers[index] = {
         ...current,
         [field]: field === 'protocol' ? value as ProviderProtocol : value,
       }
 
-      const defaultProvider = prev.default_provider && providers.some((provider) => provider.name === prev.default_provider)
-        ? prev.default_provider
-        : providers[0]?.name ?? null
+      let defaultProvider = prev.default_provider
+      if (current.name === prev.default_provider && field === 'name') {
+        defaultProvider = nextName
+      }
+      if (defaultProvider && !providers.some((provider) => provider.name === defaultProvider)) {
+        defaultProvider = providers[0]?.name ?? null
+      }
 
       return {
         ...prev,
@@ -370,6 +405,7 @@ export default function App() {
         default_provider: defaultProvider,
       }
     })
+    updateStatus('settings', 'idle', '模型设置已修改，记得保存。')
   }
 
   function addProvider() {
@@ -386,6 +422,7 @@ export default function App() {
         default_provider: next.default_provider ?? providers[0]?.name ?? null,
       }
     })
+    setSettingsExpanded(true)
     updateStatus('settings', 'idle', '已新增一个模型配置项，填写后记得保存。')
   }
 
@@ -394,12 +431,13 @@ export default function App() {
       if (!prev) return prev
       const provider = prev.providers[index]
       const providers = prev.providers.filter((_, current) => current !== index)
+      const nextProviders = providers.length > 0 ? providers : [emptyProvider(0)]
       return {
         ...prev,
-        providers: providers.length > 0 ? providers : [emptyProvider(0)],
+        providers: nextProviders,
         default_provider:
           prev.default_provider === provider?.name
-            ? providers[0]?.name ?? null
+            ? nextProviders[0]?.name ?? null
             : prev.default_provider,
       }
     })
@@ -407,17 +445,15 @@ export default function App() {
   }
 
   async function loadTrace(target = traceTarget) {
-    updateStatus('trace', 'loading', target.trim()
-      ? `正在加载 “${target.trim()}” 的 Trace 视图...`
-      : '正在加载最近的决策 Trace...')
+    updateStatus(
+      'trace',
+      'loading',
+      target.trim() ? `正在加载 “${target.trim()}” 的 Trace 视图...` : '正在加载最近的决策 Trace...',
+    )
     try {
       const data = await invoke<TraceData>('get_trace', { projectPath, target })
       setTrace(data)
-      updateStatus(
-        'trace',
-        'success',
-        `已加载 ${data.decisions.length} 个决策、${data.commits.length} 个提交、${data.evidence.length} 条证据边。`,
-      )
+      updateStatus('trace', 'success', `已加载 ${data.decisions.length} 个决策、${data.commits.length} 个提交、${data.evidence.length} 条证据边。`)
     } catch (error) {
       setTrace(null)
       updateStatus('trace', 'error', `Trace 加载失败：${String(error)}`)
@@ -497,7 +533,7 @@ export default function App() {
                 placeholder="/path/to/project"
               />
               <button type="button" className="secondary-button" onClick={handlePickProjectPath} disabled={statuses.project.state === 'loading'}>
-                选择项目
+                {statuses.project.state === 'loading' ? '选择中...' : '选择项目'}
               </button>
             </div>
             <p>先选择仓库目录，再建立索引、配置模型和执行问答。</p>
@@ -537,6 +573,97 @@ export default function App() {
 
         <StatusBanner statuses={statuses} />
 
+        <section className={`settings-rail ${needsSettingsAttention ? 'attention' : ''}`}>
+          <div className="settings-rail-header">
+            <div className="settings-rail-copy">
+              <div className="eyebrow">关键设置</div>
+              <h3>模型设置</h3>
+              <p>
+                当前默认模型：<strong>{defaultProviderName}</strong>
+                {settings?.providers.length ? `，共 ${settings.providers.length} 个 provider。` : '，当前还没有有效配置。'}
+              </p>
+            </div>
+            <div className="settings-rail-actions">
+              <button type="button" className="secondary-button" onClick={() => setPanel('settings')}>
+                打开完整设置
+              </button>
+              <button type="button" className="secondary-button" onClick={() => setSettingsExpanded((prev) => !prev)}>
+                {settingsExpanded ? '收起设置' : '展开设置'}
+              </button>
+            </div>
+          </div>
+
+          {settingsExpanded && (
+            <div className="settings-rail-body">
+                <div className="settings-rail-toolbar">
+                <p>这里是最常用的模型配置入口。推荐优先使用 LiteLLM 网关，设置保存后通常不需要频繁改动，所以默认支持收起。</p>
+                <div className="settings-rail-actions">
+                  <button type="button" className="secondary-button" onClick={() => loadSettings()} disabled={disabled}>
+                    {statuses.settings.state === 'loading' ? '读取中...' : '重新读取'}
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => testSettingsConnection(settings?.default_provider)} disabled={disabled}>
+                    {statuses.settings.state === 'loading' ? '测试中...' : '测试连接'}
+                  </button>
+                  <button type="button" className="primary-button" onClick={() => saveSettings()} disabled={disabled}>
+                    {statuses.settings.state === 'loading' ? '保存中...' : '保存设置'}
+                  </button>
+                </div>
+              </div>
+
+              <PanelState status={statuses.settings} empty={!settings}>
+                {settings ? (
+                  <div className="settings-rail-grid">
+                    <div className="settings-card">
+                      <label htmlFor="rail-default-provider">默认 provider</label>
+                      <select
+                        id="rail-default-provider"
+                        value={settings.default_provider ?? ''}
+                        onChange={(event) => setSettings((prev) => prev ? ({
+                          ...prev,
+                          default_provider: event.target.value || null,
+                        }) : prev)}
+                      >
+                        {settings.providers.map((provider) => (
+                          <option key={provider.name} value={provider.name}>
+                            {provider.name || '未命名 provider'}
+                          </option>
+                        ))}
+                      </select>
+                      <p>问答、文档、评测都会优先使用这里指定的默认 provider。</p>
+                    </div>
+
+                    <div className="settings-card settings-card-summary">
+                      <div className="settings-card-header">
+                        <div>
+                          <strong>配置摘要</strong>
+                          <p>{settings.config_path}</p>
+                        </div>
+                        <button type="button" className="ghost-button" onClick={addProvider} disabled={disabled}>
+                          新增 provider
+                        </button>
+                      </div>
+                      {settingsTestResult ? <div className="settings-test-result">{settingsTestResult}</div> : null}
+                      <div className="provider-summary-list">
+                        {settings.providers.map((provider, index) => (
+                          <button
+                            key={`${provider.name}-${index}`}
+                            type="button"
+                            className="provider-summary-chip"
+                            onClick={() => setPanel('settings')}
+                          >
+                            <span>{provider.name || `provider-${index + 1}`}</span>
+                            <small>{provider.protocol} / {provider.model || '未设置模型'}</small>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </PanelState>
+            </div>
+          )}
+        </section>
+
         <div className="workspace-grid">
           <section className="main-panel">
             {panel === 'chat' && (
@@ -544,7 +671,7 @@ export default function App() {
                 <div className="helper-strip">
                   <div>
                     <strong>如何使用</strong>
-                    <p>先建立索引，再在“模型设置”里确认默认模型可用，然后直接提问架构、职责、设计原因或新人上手路径。</p>
+                    <p>先建立索引，再确认顶部“模型设置”已经可用，然后直接提问架构、职责、设计原因或新人上手路径。</p>
                   </div>
                   <div className="suggestion-list">
                     {suggestedQuestions.map((item) => (
@@ -595,12 +722,18 @@ export default function App() {
               <div className="panel-stack">
                 <div className="toolbar">
                   <div className="toolbar-copy">
-                    <strong>模型设置管理</strong>
-                    <p>这里编辑的是当前项目的 `.bs/config.toml`。支持 OpenAI 协议和 Anthropic 协议的自定义 AI 服务。</p>
+                    <strong>完整模型设置</strong>
+                    <p>这里编辑的是当前项目的 `.bs/config.toml`。完整表单适合首次配置或调整多个 provider。</p>
                   </div>
                   <div className="toolbar-actions">
                     <button type="button" className="secondary-button" onClick={() => loadSettings()} disabled={disabled}>
-                      {statuses.settings.state === 'loading' ? '加载中...' : '重新读取'}
+                      {statuses.settings.state === 'loading' ? '读取中...' : '重新读取'}
+                    </button>
+                    <button type="button" className="secondary-button" onClick={() => testSettingsConnection(settings?.default_provider)} disabled={disabled}>
+                      {statuses.settings.state === 'loading' ? '测试中...' : '测试默认连接'}
+                    </button>
+                    <button type="button" className="secondary-button" onClick={addProvider} disabled={disabled}>
+                      新增 provider
                     </button>
                     <button type="button" className="primary-button" onClick={() => saveSettings()} disabled={disabled}>
                       {statuses.settings.state === 'loading' ? '保存中...' : '保存设置'}
@@ -622,111 +755,106 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="settings-card">
-                        <label htmlFor="default-provider">默认 provider</label>
-                        <select
-                          id="default-provider"
-                          value={settings.default_provider ?? ''}
-                          onChange={(event) => setSettings((prev) => prev ? ({
-                            ...prev,
-                            default_provider: event.target.value || null,
-                          }) : prev)}
-                        >
-                          {settings.providers.map((provider) => (
-                            <option key={provider.name} value={provider.name}>
-                              {provider.name}
-                            </option>
-                          ))}
-                        </select>
-                        <p>桌面端问答、文档生成和评测都会优先使用这里选择的默认模型。</p>
-                      </div>
+                      {settings.providers.map((provider, index) => (
+                        <div key={`${provider.name}-${index}`} className="settings-card">
+                          <div className="settings-card-header">
+                            <div>
+                              <strong>{provider.name || `模型配置 ${index + 1}`}</strong>
+                              <p>为当前项目配置一个可直接调用的模型服务。</p>
+                            </div>
+                            <button type="button" className="ghost-button" onClick={() => removeProvider(index)} disabled={disabled}>
+                              删除
+                            </button>
+                          </div>
 
-                      <div className="settings-actions">
-                        <button type="button" className="secondary-button" onClick={addProvider} disabled={disabled}>
-                          新增模型配置
-                        </button>
-                      </div>
-
-                      <div className="settings-list">
-                        {settings.providers.map((provider, index) => (
-                          <div key={`${provider.name}-${index}`} className="settings-card">
-                            <div className="settings-card-header">
-                              <div>
-                                <strong>{provider.name || `模型配置 ${index + 1}`}</strong>
-                                <p>为当前项目配置一个可直接调用的模型服务。</p>
-                              </div>
-                              <button type="button" className="ghost-button" onClick={() => removeProvider(index)} disabled={disabled}>
-                                删除
-                              </button>
+                          <div className="settings-grid">
+                            <div className="field-group">
+                              <label>显示名称</label>
+                              <input
+                                value={provider.name}
+                                onChange={(event) => updateProvider(index, 'name', event.target.value)}
+                                placeholder="例如 openai / claude / local-dev"
+                              />
                             </div>
 
-                            <div className="settings-grid">
-                              <div className="field-group">
-                                <label>显示名称</label>
-                                <input
-                                  value={provider.name}
-                                  onChange={(event) => updateProvider(index, 'name', event.target.value)}
-                                  placeholder="例如 openai / claude / local-dev"
-                                />
-                              </div>
+                            <div className="field-group">
+                              <label>协议类型</label>
+                              <select
+                                value={provider.protocol}
+                                onChange={(event) => updateProvider(index, 'protocol', event.target.value)}
+                              >
+                                {protocolOptions.map((option) => (
+                                  <option key={option.value} value={option.value}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                              <p>{protocolOptions.find((option) => option.value === provider.protocol)?.helper}</p>
+                            </div>
 
-                              <div className="field-group">
-                                <label>协议类型</label>
-                                <select
-                                  value={provider.protocol}
-                                  onChange={(event) => updateProvider(index, 'protocol', event.target.value)}
+                            <div className="field-group span-2">
+                              <label>Base URL</label>
+                              <input
+                                value={provider.base_url}
+                                onChange={(event) => updateProvider(index, 'base_url', event.target.value)}
+                                placeholder={provider.protocol === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1'}
+                              />
+                              <p>留空会使用协议默认地址。Anthropic 协议会自动补 `/messages`。</p>
+                            </div>
+
+                            <div className="field-group span-2">
+                              <label>模型名</label>
+                              <input
+                                value={provider.model}
+                                onChange={(event) => updateProvider(index, 'model', event.target.value)}
+                                placeholder={provider.protocol === 'anthropic' ? 'claude-3-7-sonnet-latest' : 'gpt-4o-mini'}
+                              />
+                            </div>
+
+                            <div className="field-group">
+                              <label>API Key</label>
+                              <input
+                                type="password"
+                                value={provider.api_key}
+                                onChange={(event) => updateProvider(index, 'api_key', event.target.value)}
+                                placeholder="可直接填写密钥"
+                              />
+                            </div>
+
+                            <div className="field-group">
+                              <label>API Key 环境变量</label>
+                              <input
+                                value={provider.api_key_env}
+                                onChange={(event) => updateProvider(index, 'api_key_env', event.target.value)}
+                                placeholder={provider.protocol === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'}
+                              />
+                              <p>建议优先使用环境变量。直接写入 API Key 只适合本机临时调试。</p>
+                            </div>
+
+                            <div className="field-group span-2">
+                              <label>是否作为默认 provider</label>
+                              <div className="field-group-inline">
+                                <button
+                                  type="button"
+                                  className={settings.default_provider === provider.name ? 'primary-button' : 'secondary-button'}
+                                  onClick={() => setSettings((prev) => prev ? ({ ...prev, default_provider: provider.name }) : prev)}
+                                  disabled={disabled}
                                 >
-                                  {protocolOptions.map((option) => (
-                                    <option key={option.value} value={option.value}>
-                                      {option.label}
-                                    </option>
-                                  ))}
-                                </select>
-                                <p>{protocolOptions.find((option) => option.value === provider.protocol)?.helper}</p>
-                              </div>
-
-                              <div className="field-group span-2">
-                                <label>Base URL</label>
-                                <input
-                                  value={provider.base_url}
-                                  onChange={(event) => updateProvider(index, 'base_url', event.target.value)}
-                                  placeholder={provider.protocol === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1'}
-                                />
-                                <p>留空会使用协议默认地址。Anthropic 协议会自动补 `/messages`。</p>
-                              </div>
-
-                              <div className="field-group span-2">
-                                <label>模型名</label>
-                                <input
-                                  value={provider.model}
-                                  onChange={(event) => updateProvider(index, 'model', event.target.value)}
-                                  placeholder={provider.protocol === 'anthropic' ? 'claude-3-7-sonnet-latest' : 'gpt-4o-mini'}
-                                />
-                              </div>
-
-                              <div className="field-group">
-                                <label>API Key</label>
-                                <input
-                                  type="password"
-                                  value={provider.api_key}
-                                  onChange={(event) => updateProvider(index, 'api_key', event.target.value)}
-                                  placeholder="可直接填写密钥"
-                                />
-                              </div>
-
-                              <div className="field-group">
-                                <label>API Key 环境变量</label>
-                                <input
-                                  value={provider.api_key_env}
-                                  onChange={(event) => updateProvider(index, 'api_key_env', event.target.value)}
-                                  placeholder={provider.protocol === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'}
-                                />
-                                <p>建议优先使用环境变量。直接写入 API Key 只适合本机临时调试。</p>
+                                  {settings.default_provider === provider.name ? '当前默认' : '设为默认'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={() => testSettingsConnection(provider.name)}
+                                  disabled={disabled}
+                                >
+                                  测试此 provider
+                                </button>
                               </div>
                             </div>
                           </div>
-                        ))}
-                      </div>
+                        </div>
+                      ))}
                     </div>
                   ) : null}
                 </PanelState>
@@ -734,13 +862,12 @@ export default function App() {
             )}
 
             {panel === 'trace' && (
-              <div className="panel-stack">
-                <div className="toolbar">
-                  <div className="toolbar-copy">
-                    <strong>追溯目标</strong>
-                    <p>留空时查看最近的决策节点，也可以输入文件路径或符号名称进行追溯。</p>
-                  </div>
-                  <div className="toolbar-actions">
+              <ToolPanel
+                status={statuses.trace}
+                title="追溯目标"
+                description="留空时查看最近的决策节点，也可以输入文件路径或符号名称进行追溯。"
+                actionArea={(
+                  <>
                     <input
                       value={traceTarget}
                       onChange={(event) => setTraceTarget(event.target.value)}
@@ -750,54 +877,51 @@ export default function App() {
                     <button type="button" className="primary-button" onClick={() => loadTrace()} disabled={disabled}>
                       {statuses.trace.state === 'loading' ? '加载中...' : '刷新追溯结果'}
                     </button>
-                  </div>
-                </div>
-
-                <PanelState status={statuses.trace} empty={!trace}>
-                  {trace ? (
-                    <>
-                      <MetricRow
-                        items={[
-                          ['锚点', trace.anchors.length],
-                          ['决策', trace.decisions.length],
-                          ['提交', trace.commits.length],
-                          ['证据', trace.evidence.length],
-                        ]}
-                      />
-                      <Section title="锚点节点" empty="当前还没有匹配到文件或符号节点。">
-                        {trace.anchors.map((node) => <NodeCard key={node.id} node={node} />)}
-                      </Section>
-                      <Section title="决策节点" empty="当前目标还没有关联到决策节点，通常需要先运行 explain 或 diff。">
-                        {trace.decisions.map((node) => <NodeCard key={node.id} node={node} />)}
-                      </Section>
-                      <Section title="提交记录" empty="当前目标还没有关联到提交证据。">
-                        {trace.commits.map((node) => <NodeCard key={node.id} node={node} compact />)}
-                      </Section>
-                      <Section title="证据边" empty="当前还没有记录结构化证据边。">
-                        {trace.evidence.map((edge, index) => (
-                          <div key={`${edge.from}-${edge.to}-${index}`} className="evidence-card">
-                            <strong>{edge.kind}</strong>
-                            <div>{edge.from}{' -> '}{edge.to}</div>
-                          </div>
-                        ))}
-                      </Section>
-                      <Section title="相关节点" empty="当前没有发现额外的相关节点。">
-                        {trace.related.map((node) => <NodeCard key={node.id} node={node} compact />)}
-                      </Section>
-                    </>
-                  ) : null}
-                </PanelState>
-              </div>
+                  </>
+                )}
+              >
+                {trace ? (
+                  <>
+                    <MetricRow
+                      items={[
+                        ['锚点', trace.anchors.length],
+                        ['决策', trace.decisions.length],
+                        ['提交', trace.commits.length],
+                        ['证据', trace.evidence.length],
+                      ]}
+                    />
+                    <Section title="锚点节点" empty="当前还没有匹配到文件或符号节点。">
+                      {trace.anchors.map((node) => <NodeCard key={node.id} node={node} />)}
+                    </Section>
+                    <Section title="决策节点" empty="当前目标还没有关联到决策节点，通常需要先运行 explain 或 diff。">
+                      {trace.decisions.map((node) => <NodeCard key={node.id} node={node} />)}
+                    </Section>
+                    <Section title="提交记录" empty="当前目标还没有关联到提交证据。">
+                      {trace.commits.map((node) => <NodeCard key={node.id} node={node} compact />)}
+                    </Section>
+                    <Section title="证据边" empty="当前还没有记录结构化证据边。">
+                      {trace.evidence.map((edge, index) => (
+                        <div key={`${edge.from}-${edge.to}-${index}`} className="evidence-card">
+                          <strong>{edge.kind}</strong>
+                          <div>{edge.from}{' -> '}{edge.to}</div>
+                        </div>
+                      ))}
+                    </Section>
+                    <Section title="相关节点" empty="当前没有发现额外的相关节点。">
+                      {trace.related.map((node) => <NodeCard key={node.id} node={node} compact />)}
+                    </Section>
+                  </>
+                ) : null}
+              </ToolPanel>
             )}
 
             {panel === 'docs' && (
-              <div className="panel-stack">
-                <div className="toolbar">
-                  <div className="toolbar-copy">
-                    <strong>文档生成器</strong>
-                    <p>需要入门文档、模块概览或交接文档时，直接从当前图谱生成。</p>
-                  </div>
-                  <div className="toolbar-actions">
+              <ToolPanel
+                status={statuses.docs}
+                title="文档生成器"
+                description="需要入门文档、模块概览或交接文档时，直接从当前图谱生成。"
+                actionArea={(
+                  <>
                     <select value={docKind} onChange={(event) => setDocKind(event.target.value)}>
                       <option value="onboarding">入门文档</option>
                       <option value="module">模块概览</option>
@@ -806,130 +930,113 @@ export default function App() {
                     <button type="button" className="primary-button" onClick={() => loadDoc()} disabled={disabled}>
                       {statuses.docs.state === 'loading' ? '生成中...' : '生成文档'}
                     </button>
-                  </div>
-                </div>
-
-                <PanelState status={statuses.docs} empty={!doc}>
-                  {doc ? <MarkdownCard title={`${doc.kind} 文档`} content={doc.content} /> : null}
-                </PanelState>
-              </div>
+                  </>
+                )}
+              >
+                {doc ? <MarkdownCard title={`${doc.kind} 文档`} content={doc.content} /> : null}
+              </ToolPanel>
             )}
 
             {panel === 'eval' && (
-              <div className="panel-stack">
-                <div className="toolbar">
-                  <div className="toolbar-copy">
-                    <strong>评测执行器</strong>
-                    <p>运行一组内置评测问题，检查当前本地索引对核心代码库问题的支持情况。</p>
-                  </div>
-                  <div className="toolbar-actions">
-                    <button type="button" className="primary-button" onClick={() => loadEval()} disabled={disabled}>
-                      {statuses.eval.state === 'loading' ? '运行中...' : '运行评测'}
-                    </button>
-                  </div>
-                </div>
-
-                <PanelState status={statuses.eval} empty={!evalData}>
-                  {evalData ? (
-                    <>
-                      <MetricRow
-                        items={[
-                          ['平均分', `${evalData.average_score.toFixed(2)}/5`],
-                          ['问题数', evalData.results.length],
-                          ['偏移检查', evalData.drift_check.length],
-                        ]}
-                      />
-                      <Section title="偏移检查" empty="当前没有返回偏移检查说明。">
-                        {evalData.drift_check.map((line, index) => (
-                          <div key={index} className="result-card">
-                            <p>{line}</p>
-                          </div>
-                        ))}
-                      </Section>
-                      <div className="result-list">
-                        {evalData.results.map((result, index) => (
-                          <div key={`${result.category}-${index}`} className="result-card">
-                            <div className="result-header">
-                              <div>
-                                <strong>{result.category}</strong>
-                                <p>{result.prompt}</p>
-                              </div>
-                              <span>{result.score.score}/5</span>
+              <ToolPanel
+                status={statuses.eval}
+                title="评测执行器"
+                description="运行一组内置评测问题，检查当前本地索引对核心代码库问题的支持情况。"
+                actionArea={(
+                  <button type="button" className="primary-button" onClick={() => loadEval()} disabled={disabled}>
+                    {statuses.eval.state === 'loading' ? '运行中...' : '运行评测'}
+                  </button>
+                )}
+              >
+                {evalData ? (
+                  <>
+                    <MetricRow
+                      items={[
+                        ['平均分', `${evalData.average_score.toFixed(2)}/5`],
+                        ['问题数', evalData.results.length],
+                        ['偏移检查', evalData.drift_check.length],
+                      ]}
+                    />
+                    <Section title="偏移检查" empty="当前没有返回偏移检查说明。">
+                      {evalData.drift_check.map((line, index) => (
+                        <div key={index} className="result-card">
+                          <p>{line}</p>
+                        </div>
+                      ))}
+                    </Section>
+                    <div className="result-list result-list-column">
+                      {evalData.results.map((result, index) => (
+                        <div key={`${result.category}-${index}`} className="result-card">
+                          <div className="result-header">
+                            <div>
+                              <strong>{result.category}</strong>
+                              <p>{result.prompt}</p>
                             </div>
-                            <p className="result-rationale">{result.score.rationale}</p>
-                            <MarkdownCard title="回答内容" content={result.answer} />
+                            <span>{result.score.score}/5</span>
                           </div>
-                        ))}
-                      </div>
-                    </>
-                  ) : null}
-                </PanelState>
-              </div>
-            )}
-
-            {panel === 'graph' && (
-              <div className="panel-stack">
-                <div className="toolbar">
-                  <div className="toolbar-copy">
-                    <strong>图谱浏览器</strong>
-                    <p>这是检查索引是否正确捕获文件、符号、决策和提交的最快方式。</p>
-                  </div>
-                  <div className="toolbar-actions">
-                    <button type="button" className="primary-button" onClick={() => loadGraph()} disabled={disabled}>
-                      {statuses.graph.state === 'loading' ? '加载中...' : '刷新图谱'}
-                    </button>
-                  </div>
-                </div>
-
-                <PanelState status={statuses.graph} empty={!graph}>
-                  {graph ? (
-                    <>
-                      <MetricRow
-                        items={[
-                          ['节点', graph.nodes.length],
-                          ['边', graph.edges.length],
-                        ]}
-                      />
-                      <div className="node-grid">
-                        {graph.nodes.slice(0, 120).map((node) => (
-                          <NodeCard key={node.id} node={node} compact />
-                        ))}
-                      </div>
-                      {graph.nodes.length > 120 && (
-                        <p className="footnote">当前仅展示前 120 个节点。需要进一步缩小范围时，请切换到 Trace 面板。</p>
-                      )}
-                    </>
-                  ) : null}
-                </PanelState>
-              </div>
-            )}
-
-            {panel === 'memory' && (
-              <div className="panel-stack">
-                <div className="toolbar">
-                  <div className="toolbar-copy">
-                    <strong>近期记忆</strong>
-                    <p>这里展示的是桌面端问答过程中沉淀下来的近期短期记忆内容。</p>
-                  </div>
-                  <div className="toolbar-actions">
-                    <button type="button" className="primary-button" onClick={() => loadMemories()} disabled={disabled}>
-                      {statuses.memory.state === 'loading' ? '加载中...' : '刷新记忆'}
-                    </button>
-                  </div>
-                </div>
-
-                <PanelState status={statuses.memory} empty={memories.length === 0}>
-                  {memories.length > 0 ? (
-                    <div className="result-list">
-                      {memories.map((memory, index) => (
-                        <div key={index} className="memory-card">
-                          {memory}
+                          <p className="result-rationale">{result.score.rationale}</p>
+                          <MarkdownCard title="回答内容" content={result.answer} />
                         </div>
                       ))}
                     </div>
-                  ) : null}
-                </PanelState>
-              </div>
+                  </>
+                ) : null}
+              </ToolPanel>
+            )}
+
+            {panel === 'graph' && (
+              <ToolPanel
+                status={statuses.graph}
+                title="图谱浏览器"
+                description="这是检查索引是否正确捕获文件、符号、决策和提交的最快方式。"
+                actionArea={(
+                  <button type="button" className="primary-button" onClick={() => loadGraph()} disabled={disabled}>
+                    {statuses.graph.state === 'loading' ? '加载中...' : '刷新图谱'}
+                  </button>
+                )}
+              >
+                {graph ? (
+                  <>
+                    <MetricRow
+                      items={[
+                        ['节点', graph.nodes.length],
+                        ['边', graph.edges.length],
+                      ]}
+                    />
+                    <div className="node-grid">
+                      {graph.nodes.slice(0, 120).map((node) => (
+                        <NodeCard key={node.id} node={node} compact />
+                      ))}
+                    </div>
+                    {graph.nodes.length > 120 && (
+                      <p className="footnote">当前仅展示前 120 个节点。需要进一步缩小范围时，请切换到 Trace 面板。</p>
+                    )}
+                  </>
+                ) : null}
+              </ToolPanel>
+            )}
+
+            {panel === 'memory' && (
+              <ToolPanel
+                status={statuses.memory}
+                title="近期记忆"
+                description="这里展示的是桌面端问答过程中沉淀下来的近期短期记忆内容。"
+                actionArea={(
+                  <button type="button" className="primary-button" onClick={() => loadMemories()} disabled={disabled}>
+                    {statuses.memory.state === 'loading' ? '加载中...' : '刷新记忆'}
+                  </button>
+                )}
+              >
+                {memories.length > 0 ? (
+                  <div className="result-list result-list-column">
+                    {memories.map((memory, index) => (
+                      <div key={index} className="memory-card">
+                        {memory}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </ToolPanel>
             )}
           </section>
 
@@ -952,8 +1059,8 @@ export default function App() {
             <div className="context-card">
               <div className="context-label">操作提示</div>
               <ul>
-                <li>切换项目路径后，建议先重新建立索引，再检查模型设置。</li>
-                <li>优先在设置面板里配置默认模型和协议，再执行问答、文档或评测。</li>
+                <li>切换项目路径后，建议先重新建立索引，再检查顶部模型设置。</li>
+                <li>模型设置是基础入口，但保存成功后可以收起，减少界面干扰。</li>
                 <li>OpenAI 协议适合兼容 `/v1` 接口的服务，Anthropic 协议适合 Messages API。</li>
                 <li>桌面端操作全部走本地能力，不依赖外部 HTTP 服务。</li>
               </ul>
@@ -961,6 +1068,36 @@ export default function App() {
           </aside>
         </div>
       </main>
+    </div>
+  )
+}
+
+function ToolPanel({
+  status,
+  title,
+  description,
+  actionArea,
+  children,
+}: {
+  status: StatusEntry
+  title: string
+  description: string
+  actionArea: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <div className="panel-stack">
+      <div className="toolbar">
+        <div className="toolbar-copy">
+          <strong>{title}</strong>
+          <p>{description}</p>
+        </div>
+        <div className="toolbar-actions">{actionArea}</div>
+      </div>
+
+      <PanelState status={status} empty={!children}>
+        {children}
+      </PanelState>
     </div>
   )
 }

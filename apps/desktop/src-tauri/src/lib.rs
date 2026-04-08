@@ -6,8 +6,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_default_project_path,
+            commands::pick_project_directory,
             commands::get_model_settings,
             commands::save_model_settings,
+            commands::test_model_connection,
             commands::get_graph,
             commands::get_trace,
             commands::get_doc,

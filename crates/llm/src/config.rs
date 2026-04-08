@@ -12,6 +12,7 @@ use std::path::Path;
 pub enum ProviderProtocol {
     #[default]
     OpenAi,
+    LiteLlm,
     Anthropic,
 }
 
@@ -85,11 +86,9 @@ impl BsConfig {
             Some(p) => {
                 let api_key = resolve_api_key(p)?;
                 match p.protocol {
-                    ProviderProtocol::OpenAi => Ok(Box::new(OpenAiClient::new(
-                        &api_key,
-                        p.base_url.as_deref(),
-                        &p.model,
-                    ))),
+                    ProviderProtocol::OpenAi | ProviderProtocol::LiteLlm => Ok(Box::new(
+                        OpenAiClient::new(&api_key, p.base_url.as_deref(), &p.model),
+                    )),
                     ProviderProtocol::Anthropic => Ok(Box::new(AnthropicClient::new(
                         &api_key,
                         p.base_url.as_deref(),
@@ -131,6 +130,7 @@ fn resolve_api_key(p: &ProviderConfig) -> Result<String> {
     // 3. Guess common env var names
     let guesses = [
         format!("{}_API_KEY", p.name.to_uppercase()),
+        "LITELLM_API_KEY".to_string(),
         "ANTHROPIC_API_KEY".to_string(),
         "OPENAI_API_KEY".to_string(),
     ];
