@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "loci",
+  "productName": "脉点",
   "version": "0.1.0",
   "identifier": "com.inteye.loci",
   "mainBinaryName": "loci-desktop",
@@ -13,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "loci",
+        "title": "脉点",
         "width": 1200,
         "height": 820,
         "resizable": true
@@ -28,8 +28,8 @@
     "targets": "all",
     "createUpdaterArtifacts": false,
     "category": "DeveloperTool",
-    "shortDescription": "Local-first codebase understanding desktop app",
-    "longDescription": "loci desktop packages indexing, graph navigation, trace inspection, documentation generation, and evaluation into a single local application.",
+    "shortDescription": "本地优先的代码库理解桌面应用",
+    "longDescription": "脉点将索引、图谱浏览、追溯分析、文档生成和质量评测整合进一个本地桌面应用中。",
     "publisher": "inteye",
     "copyright": "Copyright (c) inteye",
     "icon": [

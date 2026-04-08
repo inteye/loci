@@ -194,7 +194,7 @@ const builtInProviders: Array<{
   {
     id: 'litellm',
     label: 'litellm-rs Gateway',
-    description: '推荐模式。由 litellm-rs 管理多模型，loci 只连接一个兼容网关。',
+    description: '推荐模式。由 litellm-rs 管理多模型，脉点只连接一个兼容网关。',
     protocol: 'litellm',
     base_url: 'http://localhost:4000/v1',
     model: 'gpt-4o-mini',
@@ -213,7 +213,7 @@ const protocolOptions: Array<{ value: ProviderProtocol; label: string; helper: s
   {
     value: 'litellm',
     label: 'litellm-rs 网关',
-    helper: '推荐统一接入方式。通过 litellm-rs 聚合多模型，再由 loci 只对接一个网关地址。',
+    helper: '推荐统一接入方式。通过 litellm-rs 聚合多模型，再由脉点只对接一个网关地址。',
   },
   {
     value: 'anthropic',
@@ -687,7 +687,7 @@ export default function App() {
           <div className="brand-block">
             <div className="brand-mark">l</div>
             <div>
-              <h1>loci desktop</h1>
+              <h1>脉点</h1>
               <p>本地优先的代码库理解工作台</p>
             </div>
           </div>
@@ -1346,7 +1346,7 @@ function MessageCard({ message }: { message: ChatMessage }) {
   return (
     <div className={`message-card ${message.role}`}>
       <div className="message-meta">
-        <span>{message.title ?? (message.role === 'user' ? '你' : message.role === 'assistant' ? 'loci' : '系统')}</span>
+        <span>{message.title ?? (message.role === 'user' ? '你' : message.role === 'assistant' ? '脉点' : '系统')}</span>
       </div>
       <Markdown content={message.content} />
     </div>
@@ -1357,7 +1357,7 @@ function PendingMessage({ text }: { text: string }) {
   return (
     <div className="message-card assistant pending">
       <div className="message-meta">
-        <span>loci</span>
+        <span>脉点</span>
       </div>
       <div className="pending-line">
         <span className="pending-dot" />
