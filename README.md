@@ -75,11 +75,27 @@ LLM provider 可以通过环境变量或配置文件提供。推荐复制 [confi
 
 推荐优先级：
 
-1. `LiteLLM` 统一网关
+1. `litellm-rs` 统一网关
 2. 直接连接 OpenAI-compatible 服务
 3. 直接连接 Anthropic Messages API
 
-最推荐的生产方案是让 `loci desktop` 和 CLI 都指向同一个 LiteLLM 网关，这样模型切换、鉴权和多 provider 管理都在 LiteLLM 里完成，`loci` 只维护项目级默认 provider。
+最推荐的生产方案是让 `loci desktop` 和 CLI 都指向同一个 `litellm-rs` 网关，这样模型切换、鉴权和多 provider 管理都在网关里完成，`loci` 只维护项目级默认 provider。
+
+桌面端内置了一组常见服务商入口：
+
+- `OpenAI`
+- `Anthropic`
+- `Ollama`
+- `Qwen Coding Plan`
+- `litellm-rs Gateway`
+
+这些内置项默认已经带好协议、推荐地址和默认模型，通常只需要补 `API Key`。
+如果你接的是其他兼容服务，再使用“自定义 provider”，填写：
+
+- 协议类型：`OpenAI` 或 `Anthropic`
+- 接口地址
+- 模型名
+- API Key
 
 示例：
 
@@ -100,6 +116,70 @@ api_key_env = "LITELLM_API_KEY"
 export OPENAI_API_KEY=sk-...
 export LITELLM_API_KEY=sk-...
 ```
+
+### litellm-rs 集成
+
+如果你准备把 `litellm-rs` 作为统一模型网关，建议按这条最短路径接入。
+
+1. 启动 `litellm-rs` gateway
+
+```bash
+cargo install litellm-rs --bin gateway
+mkdir -p config
+curl -L https://raw.githubusercontent.com/majiayu000/litellm-rs/main/config/gateway.yaml.example -o config/gateway.yaml
+gateway
+```
+
+默认情况下，`loci` 期望网关地址是：
+
+```text
+http://localhost:4000/v1
+```
+
+2. 配置 `loci`
+
+```toml
+default_provider = "litellm"
+
+[[providers]]
+name = "litellm"
+protocol = "litellm"
+base_url = "http://localhost:4000/v1"
+model = "gpt-4o-mini"
+api_key_env = "LITELLM_API_KEY"
+```
+
+如果你的 `litellm-rs` 没有开启鉴权，也可以临时写一个占位 key：
+
+```toml
+api_key = "litellm"
+```
+
+3. 先用 CLI 验证连接
+
+```bash
+loci model list
+loci model test --provider litellm
+```
+
+4. 再进入桌面端
+
+在桌面端里：
+
+- 选择项目目录
+- 建立索引
+- 在顶部 `模型设置` 条里确认默认 provider 是 `litellm`
+- 点击 `测试连接`
+- 通过后再开始问答、文档生成和评测
+
+如果你不想自建网关，桌面端也支持直接配置内置服务商：
+
+- `OpenAI`
+- `Anthropic`
+- `Ollama`
+- `Qwen Coding Plan`
+
+其他兼容服务走 `自定义 Provider` 即可。
 
 ## 命令行快速开始
 
