@@ -2,6 +2,7 @@
   color: #132033;
   background: #f4f6f9;
   font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 14px;
 }
 
 * {
@@ -18,6 +19,8 @@ body,
 
 body {
   color: #132033;
+  font-size: 0.95rem;
+  line-height: 1.5;
 }
 
 button,
@@ -40,7 +43,7 @@ select {
   background: #fff;
   color: #132033;
   border-radius: 14px;
-  padding: 12px 14px;
+  padding: 10px 12px;
 }
 
 textarea {
@@ -104,7 +107,7 @@ textarea {
   border-radius: 14px;
   display: grid;
   place-items: center;
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 700;
   color: #0f2744;
   background: linear-gradient(135deg, #dcecff 0%, #8ec5ff 100%);
@@ -120,7 +123,7 @@ textarea {
 }
 
 .brand-block h1 {
-  font-size: 22px;
+  font-size: 1.2rem;
 }
 
 .brand-block p,
@@ -154,7 +157,7 @@ textarea {
 .eyebrow,
 .summary-label,
 .context-label {
-  font-size: 11px;
+  font-size: 0.68rem;
   letter-spacing: 0.04em;
   color: #7187a1;
   margin-bottom: 10px;
@@ -302,7 +305,8 @@ textarea {
 .ghost-button,
 .settings-launcher {
   border: 0;
-  padding: 12px 16px;
+  padding: 10px 14px;
+  font-size: 0.92rem;
 }
 
 .primary-button {
@@ -326,7 +330,8 @@ textarea {
 
 .suggestion-chip,
 .provider-summary-chip {
-  padding: 10px 14px;
+  padding: 8px 12px;
+  font-size: 0.88rem;
 }
 
 .wide-button {
@@ -367,7 +372,7 @@ textarea {
 }
 
 .workspace-header h2 {
-  font-size: 30px;
+  font-size: 1.7rem;
   margin-bottom: 8px;
 }
 
@@ -430,9 +435,9 @@ textarea {
 }
 
 .status-pill {
-  padding: 8px 12px;
+  padding: 7px 11px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 0.76rem;
   border: 1px solid #d7e0ea;
   background: #fff;
 }
@@ -453,10 +458,11 @@ textarea {
   display: flex;
   gap: 12px;
   align-items: flex-start;
-  padding: 14px 16px;
+  padding: 12px 14px;
   border-radius: 16px;
   border: 1px solid #dbe3ed;
   background: #fff;
+  font-size: 0.92rem;
 }
 
 .status-banner.loading {
@@ -529,7 +535,7 @@ textarea {
 
 .message-meta {
   margin-bottom: 12px;
-  font-size: 12px;
+  font-size: 0.76rem;
 }
 
 .pending-line {
@@ -567,7 +573,7 @@ textarea {
 }
 
 .inline-status {
-  font-size: 13px;
+  font-size: 0.82rem;
   color: #245fc1;
 }
 
@@ -598,7 +604,7 @@ textarea {
 
 .metric-card span {
   display: block;
-  font-size: 12px;
+  font-size: 0.76rem;
   margin-bottom: 8px;
 }
 
@@ -680,7 +686,7 @@ textarea {
 
 .provider-readonly-block strong {
   color: #72849a;
-  font-size: 12px;
+  font-size: 0.76rem;
 }
 
 .provider-readonly-block span {
