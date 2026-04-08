@@ -10,6 +10,7 @@ pub fn run() {
             commands::get_model_settings,
             commands::save_model_settings,
             commands::test_model_connection,
+            commands::list_provider_models,
             commands::get_graph,
             commands::get_trace,
             commands::get_doc,

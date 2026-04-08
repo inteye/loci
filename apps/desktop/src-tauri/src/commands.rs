@@ -9,6 +9,7 @@ use loci_llm::{
 };
 use loci_memory::{remember, MemoryStore};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
@@ -67,6 +68,11 @@ pub struct ModelSettingsData {
     pub config_path: String,
     pub default_provider: Option<String>,
     pub providers: Vec<ProviderSettingsData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderModelsData {
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -242,6 +248,139 @@ async fn test_provider_connection_local(
         llm.model(),
         text
     ))
+}
+
+fn effective_base_url(provider: &ProviderSettingsData) -> String {
+    let url = provider.base_url.trim();
+    if !url.is_empty() {
+        return url.to_string();
+    }
+    match provider.protocol.as_str() {
+        "anthropic" => "https://api.anthropic.com/v1".to_string(),
+        _ => "https://api.openai.com/v1".to_string(),
+    }
+}
+
+fn build_auth_headers(
+    provider: &ProviderSettingsData,
+    request: reqwest::RequestBuilder,
+) -> reqwest::RequestBuilder {
+    let mut request = request;
+    let key = provider.api_key.trim();
+    if !key.is_empty() {
+        match provider.protocol.as_str() {
+            "anthropic" => {
+                request = request
+                    .header("x-api-key", key)
+                    .header("anthropic-version", "2023-06-01");
+            }
+            _ => {
+                request = request.bearer_auth(key);
+            }
+        }
+    }
+    request
+}
+
+async fn fetch_models_from_openai_compatible(
+    client: &reqwest::Client,
+    provider: &ProviderSettingsData,
+) -> Result<Vec<String>, String> {
+    let base_url = effective_base_url(provider);
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let response = build_auth_headers(provider, client.get(url))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!("model list request failed: {}", response.status()));
+    }
+
+    let body: Value = response.json().await.map_err(|e| e.to_string())?;
+    let mut models = body
+        .get("data")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(|id| id.as_str()).map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if models.is_empty() && base_url.contains("11434") {
+        let fallback_url = format!(
+            "{}/api/tags",
+            base_url.trim_end_matches("/v1").trim_end_matches('/')
+        );
+        let response = client
+            .get(fallback_url)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if response.status().is_success() {
+            let body: Value = response.json().await.map_err(|e| e.to_string())?;
+            models = body
+                .get("models")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| {
+                            item.get("name")
+                                .and_then(|name| name.as_str())
+                                .map(String::from)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+        }
+    }
+
+    if models.is_empty() {
+        return Err("no models returned from provider".to_string());
+    }
+
+    models.sort();
+    models.dedup();
+    Ok(models)
+}
+
+async fn fetch_models_from_anthropic(
+    client: &reqwest::Client,
+    provider: &ProviderSettingsData,
+) -> Result<Vec<String>, String> {
+    let base_url = effective_base_url(provider);
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let response = build_auth_headers(provider, client.get(url))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!("model list request failed: {}", response.status()));
+    }
+
+    let body: Value = response.json().await.map_err(|e| e.to_string())?;
+    let mut models = body
+        .get("data")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("id").and_then(|id| id.as_str()).map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if models.is_empty() {
+        return Err("no models returned from provider".to_string());
+    }
+
+    models.sort();
+    models.dedup();
+    Ok(models)
 }
 
 fn settings_from_config(project_path: &Path, cfg: BsConfig) -> ModelSettingsData {
@@ -982,6 +1121,18 @@ pub async fn test_model_connection(
 ) -> Result<String, String> {
     let project_path = resolve_project_path(&project_path);
     test_provider_connection_local(&project_path, provider.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn list_provider_models(
+    provider: ProviderSettingsData,
+) -> Result<ProviderModelsData, String> {
+    let client = reqwest::Client::new();
+    let models = match provider.protocol.as_str() {
+        "anthropic" => fetch_models_from_anthropic(&client, &provider).await?,
+        _ => fetch_models_from_openai_compatible(&client, &provider).await?,
+    };
+    Ok(ProviderModelsData { models })
 }
 
 #[tauri::command]

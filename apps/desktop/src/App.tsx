@@ -75,6 +75,10 @@ interface ModelSettingsData {
   providers: ProviderSettingsData[]
 }
 
+interface ProviderModelsData {
+  models: string[]
+}
+
 interface StatusEntry {
   state: AsyncState
   message: string
@@ -297,6 +301,7 @@ export default function App() {
   const [settings, setSettings] = useState<ModelSettingsData | null>(null)
   const [settingsExpanded, setSettingsExpanded] = useState(true)
   const [settingsTestResult, setSettingsTestResult] = useState<string>('')
+  const [providerModels, setProviderModels] = useState<Record<string, string[]>>({})
   const [statuses, setStatuses] = useState<Record<Operation, StatusEntry>>(statusDefaults)
 
   const activeStatus = useMemo(() => {
@@ -483,6 +488,20 @@ export default function App() {
     } catch (error) {
       setSettingsTestResult('')
       updateStatus('settings', 'error', `连接测试失败：${String(error)}`)
+    }
+  }
+
+  async function loadProviderModels(provider: ProviderSettingsData) {
+    updateStatus('settings', 'loading', `正在读取 ${builtInLabel(provider)} 的模型列表...`)
+    try {
+      const data = await invoke<ProviderModelsData>('list_provider_models', { provider })
+      setProviderModels((prev) => ({
+        ...prev,
+        [provider.name]: data.models,
+      }))
+      updateStatus('settings', 'success', `已读取 ${data.models.length} 个模型，可直接选择。`)
+    } catch (error) {
+      updateStatus('settings', 'error', `读取模型列表失败：${String(error)}`)
     }
   }
 
@@ -973,6 +992,26 @@ export default function App() {
                                     onChange={(event) => updateProvider(index, 'model', event.target.value)}
                                     placeholder={provider.protocol === 'anthropic' ? 'claude-3-7-sonnet-latest' : 'gpt-4o-mini'}
                                   />
+                                  {providerModels[provider.name]?.length ? (
+                                    <select
+                                      value={provider.model}
+                                      onChange={(event) => updateProvider(index, 'model', event.target.value)}
+                                    >
+                                      {providerModels[provider.name].map((model) => (
+                                        <option key={model} value={model}>{model}</option>
+                                      ))}
+                                    </select>
+                                  ) : null}
+                                  <div className="field-group-inline">
+                                    <button
+                                      type="button"
+                                      className="secondary-button"
+                                      onClick={() => loadProviderModels(provider)}
+                                      disabled={disabled}
+                                    >
+                                      读取模型列表
+                                    </button>
+                                  </div>
                                 </div>
 
                                 <div className="field-group span-2">
@@ -988,11 +1027,41 @@ export default function App() {
                             ) : (
                               <>
                                 <div className="field-group span-2">
-                                  <label>接口信息</label>
-                                  <div className="provider-readonly-block">
-                                    <div><strong>协议</strong><span>{protocolOptions.find((option) => option.value === provider.protocol)?.label}</span></div>
-                                    <div><strong>地址</strong><span>{provider.base_url || '使用协议默认地址'}</span></div>
-                                    <div><strong>模型</strong><span>{provider.model}</span></div>
+                                  <label>接口地址</label>
+                                  <input
+                                    value={provider.base_url}
+                                    onChange={(event) => updateProvider(index, 'base_url', event.target.value)}
+                                    placeholder={provider.protocol === 'anthropic' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1'}
+                                  />
+                                  <p>内置服务商允许你覆盖默认地址，用于企业代理、镜像或自建网关。</p>
+                                </div>
+
+                                <div className="field-group span-2">
+                                  <label>模型名</label>
+                                  <input
+                                    value={provider.model}
+                                    onChange={(event) => updateProvider(index, 'model', event.target.value)}
+                                    placeholder="可手动填写，也可以从当前地址读取后选择"
+                                  />
+                                  {providerModels[provider.name]?.length ? (
+                                    <select
+                                      value={provider.model}
+                                      onChange={(event) => updateProvider(index, 'model', event.target.value)}
+                                    >
+                                      {providerModels[provider.name].map((model) => (
+                                        <option key={model} value={model}>{model}</option>
+                                      ))}
+                                    </select>
+                                  ) : null}
+                                  <div className="field-group-inline">
+                                    <button
+                                      type="button"
+                                      className="secondary-button"
+                                      onClick={() => loadProviderModels(provider)}
+                                      disabled={disabled}
+                                    >
+                                      读取模型列表
+                                    </button>
                                   </div>
                                 </div>
 
