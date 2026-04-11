@@ -2,6 +2,9 @@
 /target/
 Cargo.lock
 
+apps/desktop/package-lock.json
+apps/desktop/node_modules/
+
 # Environment
 .env
 *.env
