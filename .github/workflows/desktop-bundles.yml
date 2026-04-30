@@ -69,8 +69,14 @@ jobs:
         working-directory: apps/desktop
         run: ${{ matrix.platform.build-command }}
 
-      - name: List bundle outputs
+      - name: List bundle outputs (Unix)
+        if: matrix.platform.name != 'windows'
         run: find target/release/bundle -maxdepth 3 -type f | sort
+
+      - name: List bundle outputs (Windows)
+        if: matrix.platform.name == 'windows'
+        shell: pwsh
+        run: Get-ChildItem -Path target/release/bundle -Recurse -File | Sort-Object FullName | Select-Object -ExpandProperty FullName
 
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v4
