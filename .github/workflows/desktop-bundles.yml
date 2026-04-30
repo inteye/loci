@@ -22,10 +22,13 @@ jobs:
         platform:
           - name: macos
             os: macos-latest
+            build-command: npm run tauri:build
           - name: linux
             os: ubuntu-22.04
+            build-command: npm run tauri:build
           - name: windows
             os: windows-latest
+            build-command: npm run tauri:build -- --bundles nsis
 
     steps:
       - name: Checkout
@@ -64,7 +67,7 @@ jobs:
 
       - name: Build desktop bundles
         working-directory: apps/desktop
-        run: npm run tauri:build
+        run: ${{ matrix.platform.build-command }}
 
       - name: List bundle outputs
         run: find target/release/bundle -maxdepth 3 -type f | sort
