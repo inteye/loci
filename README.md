@@ -345,13 +345,3 @@ cd apps/desktop
 npm run build
 ```
 
-## 仍待解决的问题
-
-当前 Alpha 版本仍有几个重要的开放点：
-
-- 更强的 trace 跨提交聚类能力
-- 更稳定的决策置信度表达
-- 更大规模仓库下的性能验证
-- 开源前最终许可证选择
-
-如果你想看更完整的待办和实现路径，请直接看 [docs/ROADMAP.md](docs/ROADMAP.md)。
