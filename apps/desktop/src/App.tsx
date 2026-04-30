@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import brandLogo from './assets/brand-logo.png'
 
 type Panel = 'chat' | 'trace' | 'docs' | 'eval' | 'graph' | 'memory'
 type Operation = 'project' | 'index' | 'ask' | 'settings' | 'trace' | 'docs' | 'eval' | 'graph' | 'memory'
@@ -77,6 +78,14 @@ interface ModelSettingsData {
 
 interface ProviderModelsData {
   models: string[]
+}
+
+interface ImportedProjectData {
+  url: string
+  project_name: string
+  project_path: string
+  reused_existing: boolean
+  message: string
 }
 
 interface StatusEntry {
@@ -194,7 +203,7 @@ const builtInProviders: Array<{
   {
     id: 'litellm',
     label: 'litellm-rs Gateway',
-    description: '推荐模式。由 litellm-rs 管理多模型，脉点只连接一个兼容网关。',
+    description: '推荐模式。由 litellm-rs 管理多模型，脉络只连接一个兼容网关。',
     protocol: 'litellm',
     base_url: 'http://localhost:4000/v1',
     model: 'gpt-4o-mini',
@@ -213,7 +222,7 @@ const protocolOptions: Array<{ value: ProviderProtocol; label: string; helper: s
   {
     value: 'litellm',
     label: 'litellm-rs 网关',
-    helper: '推荐统一接入方式。通过 litellm-rs 聚合多模型，再由脉点只对接一个网关地址。',
+    helper: '推荐统一接入方式。通过 litellm-rs 聚合多模型，再由脉络只对接一个网关地址。',
   },
   {
     value: 'anthropic',
@@ -310,9 +319,22 @@ function askPendingCopy(question: string): string {
   return '正在结合图谱、记忆和模型生成回答，请稍候…'
 }
 
+function GitHubMark() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M12 2C6.48 2 2 6.58 2 12.11c0 4.42 2.87 8.17 6.84 9.49.5.1.68-.22.68-.48 0-.24-.01-1.03-.01-1.87-2.78.62-3.37-1.19-3.37-1.19-.45-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.9 1.56 2.35 1.11 2.92.85.09-.67.35-1.11.63-1.37-2.22-.26-4.55-1.14-4.55-5.06 0-1.12.39-2.03 1.03-2.75-.11-.26-.45-1.31.1-2.72 0 0 .84-.27 2.75 1.05A9.3 9.3 0 0 1 12 6.9c.85 0 1.71.12 2.51.35 1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.46.1 2.72.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.8-4.57 5.06.36.32.68.93.68 1.88 0 1.36-.01 2.45-.01 2.79 0 .27.18.58.69.48A10.12 10.12 0 0 0 22 12.11C22 6.58 17.52 2 12 2Z"
+      />
+    </svg>
+  )
+}
+
 export default function App() {
   const [panel, setPanel] = useState<Panel>('chat')
-  const [projectPath, setProjectPath] = useState('.')
+  const [projectPath, setProjectPath] = useState('')
+  const [githubUrl, setGithubUrl] = useState('')
+  const [showGithubImport, setShowGithubImport] = useState(false)
   const [question, setQuestion] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([
     makeMessage(
@@ -325,24 +347,37 @@ export default function App() {
   const [docKind, setDocKind] = useState('onboarding')
   const [graph, setGraph] = useState<GraphData | null>(null)
   const [trace, setTrace] = useState<TraceData | null>(null)
+  const [traceNarrative, setTraceNarrative] = useState('')
   const [doc, setDoc] = useState<DocData | null>(null)
   const [evalData, setEvalData] = useState<EvalData | null>(null)
   const [memories, setMemories] = useState<string[]>([])
   const [settings, setSettings] = useState<ModelSettingsData | null>(null)
+  const [settingsDirty, setSettingsDirty] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [settingsTestResult, setSettingsTestResult] = useState('')
   const [providerModels, setProviderModels] = useState<Record<string, string[]>>({})
   const [statuses, setStatuses] = useState<Record<Operation, StatusEntry>>(statusDefaults)
   const [chatPendingState, setChatPendingState] = useState<string>('')
+  const latestProjectPathRef = useRef(projectPath)
+  const settingsLoadSeqRef = useRef(0)
 
   const activeStatus = useMemo(() => {
     const order: Operation[] = ['project', 'index', 'settings', 'ask', 'trace', 'docs', 'eval', 'graph', 'memory']
     return order.find((key) => statuses[key].state === 'loading')
   }, [statuses])
 
-  const defaultProviderName = settings?.default_provider ?? settings?.providers[0]?.name ?? '未设置'
+  const activeDefaultProvider = settings?.default_provider
+    ? settings.providers.find((provider) => provider.name === settings.default_provider)
+    : settings?.providers[0]
+  const defaultProviderName = activeDefaultProvider ? builtInLabel(activeDefaultProvider) : '未设置'
   const needsSettingsAttention = settingsNeedAttention(settings)
   const disabled = Boolean(activeStatus)
+  const projectLoading = statuses.project.state === 'loading'
+  const importingGithub = projectLoading && statuses.project.message.includes('GitHub')
+
+  useEffect(() => {
+    latestProjectPathRef.current = projectPath
+  }, [projectPath])
 
   useEffect(() => {
     invoke<string>('get_default_project_path')
@@ -362,7 +397,8 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    void loadSettings()
+    if (!projectPath.trim()) return
+    void loadSettings(projectPath)
   }, [projectPath])
 
   useEffect(() => {
@@ -393,12 +429,22 @@ export default function App() {
   function resetProjectViews() {
     setGraph(null)
     setTrace(null)
+    setTraceNarrative('')
     setDoc(null)
     setEvalData(null)
     setMemories([])
     setSettings(null)
+    setSettingsDirty(false)
     setProviderModels({})
     setSettingsTestResult('')
+  }
+
+  function resetProjectWorkspace() {
+    resetProjectViews()
+    setStatuses((prev) => ({
+      ...statusDefaults,
+      project: prev.project,
+    }))
   }
 
   async function handlePickProjectPath() {
@@ -410,7 +456,8 @@ export default function App() {
         return
       }
       setProjectPath(selected)
-      resetProjectViews()
+      resetProjectWorkspace()
+      setShowGithubImport(false)
       setMessages((prev) => [
         prev[0],
         makeMessage('system', `项目路径已更新为 \`${selected}\`。\n\n如果这是一个新项目，请先重新执行索引，再检查右上角模型设置。`, '项目已切换'),
@@ -421,12 +468,41 @@ export default function App() {
     }
   }
 
+  async function handleImportGithubProject() {
+    const trimmed = githubUrl.trim()
+    if (!trimmed) {
+      updateStatus('project', 'error', '请输入 GitHub 仓库地址后再导入。')
+      return
+    }
+
+    updateStatus('project', 'loading', '正在导入 GitHub 仓库并准备本地工作区...')
+    try {
+      const data = await invoke<ImportedProjectData>('import_github_project', { url: trimmed })
+      setProjectPath(data.project_path)
+      resetProjectWorkspace()
+      setShowGithubImport(false)
+      setGithubUrl('')
+      setMessages((prev) => [
+        prev[0],
+        makeMessage(
+          'system',
+          `${data.message}\n\n仓库地址：\`${trimmed}\`\n本地路径：\`${data.project_path}\`\n\n下一步建议先建立索引，再开始问答或生成文档。`,
+          data.reused_existing ? 'GitHub 仓库已连接' : 'GitHub 仓库已导入',
+        ),
+      ])
+      updateStatus('project', 'success', data.message)
+    } catch (error) {
+      updateStatus('project', 'error', `GitHub 导入失败：${String(error)}`)
+    }
+  }
+
   async function handleIndex() {
     updateStatus('index', 'loading', '正在索引项目并重建本地图谱...')
     try {
       const result = await invoke<string>('index_project', { projectPath })
       setGraph(null)
       setTrace(null)
+      setTraceNarrative('')
       setDoc(null)
       setEvalData(null)
       setMemories([])
@@ -462,20 +538,44 @@ export default function App() {
     }
   }
 
-  async function loadSettings() {
+  async function loadSettings(targetPath = latestProjectPathRef.current) {
+    const resolvedProjectPath = targetPath.trim()
+    if (!resolvedProjectPath) {
+      setSettings(null)
+      setSettingsDirty(false)
+      updateStatus('settings', 'idle', '请先选择项目目录，再读取模型设置。')
+      return
+    }
+
+    const requestId = ++settingsLoadSeqRef.current
     updateStatus('settings', 'loading', '正在读取当前项目的模型设置...')
     try {
-      const data = await invoke<ModelSettingsData>('get_model_settings', { projectPath })
+      const data = await invoke<ModelSettingsData>('get_model_settings', { projectPath: resolvedProjectPath })
+      if (requestId !== settingsLoadSeqRef.current || resolvedProjectPath !== latestProjectPathRef.current.trim()) {
+        return
+      }
+
       setSettings({
         ...data,
-        providers: (data.providers.length > 0 ? data.providers : [emptyProvider(0)]).map((provider) => ({
+        providers: data.providers.map((provider) => ({
           ...provider,
           preset: inferPreset(provider),
         })),
       })
-      updateStatus('settings', 'success', `已加载 ${data.providers.length} 个模型配置。`)
+      setSettingsDirty(false)
+      updateStatus(
+        'settings',
+        'success',
+        data.providers.length > 0
+          ? `已加载 ${data.providers.length} 个模型配置。`
+          : '当前项目还没有保存模型配置，请先添加 provider 后点击“保存设置”。',
+      )
     } catch (error) {
+      if (requestId !== settingsLoadSeqRef.current || resolvedProjectPath !== latestProjectPathRef.current.trim()) {
+        return
+      }
       setSettings(null)
+      setSettingsDirty(false)
       updateStatus('settings', 'error', `设置加载失败：${String(error)}`)
     }
   }
@@ -489,6 +589,7 @@ export default function App() {
     updateStatus('settings', 'loading', '正在保存模型设置...')
     try {
       const message = await invoke<string>('save_model_settings', { projectPath, settings })
+      setSettingsDirty(false)
       updateStatus('settings', 'success', message)
       setIsSettingsOpen(false)
       setMessages((prev) => [
@@ -555,6 +656,7 @@ export default function App() {
         default_provider: defaultProvider,
       }
     })
+    setSettingsDirty(true)
     updateStatus('settings', 'idle', '模型设置已修改，记得保存。')
   }
 
@@ -576,6 +678,7 @@ export default function App() {
         default_provider: next.default_provider ?? providers[0]?.name ?? null,
       }
     })
+    setSettingsDirty(true)
     setIsSettingsOpen(true)
     updateStatus('settings', 'idle', `已加入 ${builtInProviders.find((item) => item.id === id)?.label}，填写后记得保存。`)
   }
@@ -594,6 +697,7 @@ export default function App() {
         default_provider: next.default_provider ?? providers[0]?.name ?? null,
       }
     })
+    setSettingsDirty(true)
     setIsSettingsOpen(true)
     updateStatus('settings', 'idle', '已新增自定义 provider，填写协议、接口地址和 API Key 后记得保存。')
   }
@@ -603,17 +707,23 @@ export default function App() {
       if (!prev) return prev
       const provider = prev.providers[index]
       const providers = prev.providers.filter((_, current) => current !== index)
-      const nextProviders = providers.length > 0 ? providers : [emptyProvider(0)]
       return {
         ...prev,
-        providers: nextProviders,
+        providers,
         default_provider:
           prev.default_provider === provider?.name
-            ? nextProviders[0]?.name ?? null
+            ? providers[0]?.name ?? null
             : prev.default_provider,
       }
     })
+    setSettingsDirty(true)
     updateStatus('settings', 'idle', '已移除一个模型配置项。')
+  }
+
+  function setDefaultProvider(name: string) {
+    setSettings((prev) => prev ? ({ ...prev, default_provider: name }) : prev)
+    setSettingsDirty(true)
+    updateStatus('settings', 'idle', '默认 provider 已修改，记得保存。')
   }
 
   async function loadTrace(target = traceTarget) {
@@ -629,6 +739,34 @@ export default function App() {
     } catch (error) {
       setTrace(null)
       updateStatus('trace', 'error', `追溯加载失败：${String(error)}`)
+    }
+  }
+
+  async function handleExplainTraceTarget() {
+    const target = traceTarget.trim()
+    if (!target) {
+      updateStatus('trace', 'error', '请输入文件路径或符号名称后再生成追溯。')
+      return
+    }
+
+    updateStatus('trace', 'loading', `正在分析“${target}”并写回决策证据...`)
+    try {
+      const content = await invoke<string>('explain_target', { projectPath, target })
+      setTraceNarrative(content)
+      await loadTrace(target)
+    } catch (error) {
+      updateStatus('trace', 'error', `生成追溯失败：${String(error)}`)
+    }
+  }
+
+  async function handleAnalyzeRecentDiff() {
+    updateStatus('trace', 'loading', '正在分析最近变更并写回决策证据...')
+    try {
+      const content = await invoke<string>('analyze_recent_diff', { projectPath, commit: null })
+      setTraceNarrative(content)
+      await loadTrace('')
+    } catch (error) {
+      updateStatus('trace', 'error', `分析最近变更失败：${String(error)}`)
     }
   }
 
@@ -685,9 +823,9 @@ export default function App() {
       <aside className="sidebar">
         <div className="sidebar-inner">
           <div className="brand-block">
-            <div className="brand-mark">l</div>
+            <img className="brand-mark" src={brandLogo} alt="脉络 logo" />
             <div>
-              <h1>脉点</h1>
+              <h1>脉络</h1>
               <p>本地优先的代码库理解工作台</p>
             </div>
           </div>
@@ -703,11 +841,43 @@ export default function App() {
                   onChange={(event) => setProjectPath(event.target.value)}
                   placeholder="/path/to/project"
                 />
-                <button type="button" className="secondary-button" onClick={handlePickProjectPath} disabled={statuses.project.state === 'loading'}>
-                  {statuses.project.state === 'loading' ? '选择中...' : '选择项目'}
-                </button>
+                <div className="project-source-buttons">
+                  <button type="button" className="secondary-button" onClick={handlePickProjectPath} disabled={projectLoading}>
+                    {projectLoading && !importingGithub ? '选择中...' : '选择项目'}
+                  </button>
+                  <button
+                    type="button"
+                    className={`icon-button ${showGithubImport ? 'active' : ''}`}
+                    onClick={() => setShowGithubImport((value) => !value)}
+                    disabled={projectLoading}
+                    aria-label="导入 GitHub 项目"
+                    title="导入 GitHub 项目"
+                  >
+                    <GitHubMark />
+                  </button>
+                </div>
               </div>
-              <p>切换仓库后，建议先重新建立索引，再检查右上角模型设置。</p>
+              {showGithubImport ? (
+                <div className="github-import-panel">
+                  <label htmlFor="github-project-url">GitHub 仓库地址</label>
+                  <div className="project-actions">
+                    <input
+                      id="github-project-url"
+                      value={githubUrl}
+                      onChange={(event) => setGithubUrl(event.target.value)}
+                      placeholder="https://github.com/owner/repo"
+                    />
+                    <button type="button" className="secondary-button" onClick={() => void handleImportGithubProject()} disabled={disabled}>
+                      {importingGithub ? '导入中...' : '开始导入'}
+                    </button>
+                  </div>
+                  <div className="github-import-hint">
+                    <span>会克隆到 `~/.loci/projects`，成功后自动切换到项目目录。</span>
+                    {importingGithub ? <strong>正在克隆仓库，请稍候…</strong> : null}
+                  </div>
+                </div>
+              ) : null}
+              <p>支持本地目录和 GitHub 仓库地址。GitHub 项目会克隆到 `~/.loci/projects`，导入后会自动切换到该项目。</p>
               <button type="button" className="primary-button wide-button" onClick={handleIndex} disabled={disabled}>
                 {statuses.index.state === 'loading' ? '索引中...' : '建立索引'}
               </button>
@@ -831,12 +1001,19 @@ export default function App() {
                     onKeyDown={(event) => event.key === 'Enter' && void loadTrace()}
                     placeholder="例如：crates/cli/src/main.rs 或某个符号名"
                   />
+                  <button type="button" className="secondary-button" onClick={() => void handleExplainTraceTarget()} disabled={disabled}>
+                    生成文件/符号追溯
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => void handleAnalyzeRecentDiff()} disabled={disabled}>
+                    分析最近变更
+                  </button>
                   <button type="button" className="primary-button" onClick={() => loadTrace()} disabled={disabled}>
                     {statuses.trace.state === 'loading' ? '加载中...' : '刷新追溯结果'}
                   </button>
                 </>
               )}
             >
+              {traceNarrative ? <MarkdownCard title="追溯分析" content={traceNarrative} /> : null}
               {trace ? (
                 <>
                   <MetricRow
@@ -1009,6 +1186,7 @@ export default function App() {
           isOpen={isSettingsOpen}
           status={statuses.settings}
           settings={settings}
+          isDirty={settingsDirty}
           needsAttention={needsSettingsAttention}
           settingsTestResult={settingsTestResult}
           providerModels={providerModels}
@@ -1019,7 +1197,7 @@ export default function App() {
           onTestDefault={() => void testSettingsConnection(settings?.default_provider)}
           onAddBuiltIn={addBuiltInProvider}
           onAddCustom={addCustomProvider}
-          onSetDefault={(name) => setSettings((prev) => prev ? ({ ...prev, default_provider: name }) : prev)}
+          onSetDefault={setDefaultProvider}
           onUpdateProvider={updateProvider}
           onRemoveProvider={removeProvider}
           onTestProvider={(name) => void testSettingsConnection(name)}
@@ -1034,6 +1212,7 @@ function SettingsDrawer({
   isOpen,
   status,
   settings,
+  isDirty,
   needsAttention,
   settingsTestResult,
   providerModels,
@@ -1053,6 +1232,7 @@ function SettingsDrawer({
   isOpen: boolean
   status: StatusEntry
   settings: ModelSettingsData | null
+  isDirty: boolean
   needsAttention: boolean
   settingsTestResult: string
   providerModels: Record<string, string[]>
@@ -1101,6 +1281,18 @@ function SettingsDrawer({
           </button>
         </div>
 
+        {isDirty ? (
+          <div className="settings-dirty-banner">
+            <div>
+              <strong>你有未保存的模型设置修改</strong>
+              <span>当前改动只停留在这个界面里。测试连接不会自动保存，点击“保存设置”后下次打开才会沿用。</span>
+            </div>
+            <button type="button" className="primary-button" onClick={onSave} disabled={disabled}>
+              {status.state === 'loading' ? '保存中...' : '立即保存'}
+            </button>
+          </div>
+        ) : null}
+
         <div className="settings-drawer-content">
           <div className="settings-card">
             <div className="settings-card-header">
@@ -1134,19 +1326,28 @@ function SettingsDrawer({
             {settings ? (
               <div className="settings-form-stack">
                 <div className="settings-card">
-                  <label htmlFor="drawer-default-provider">默认 provider</label>
-                  <select
-                    id="drawer-default-provider"
-                    value={settings.default_provider ?? ''}
-                    onChange={(event) => onSetDefault(event.target.value)}
-                  >
-                    {settings.providers.map((provider) => (
-                      <option key={provider.name} value={provider.name}>
-                        {builtInLabel(provider)}
-                      </option>
-                    ))}
-                  </select>
-                  <p>桌面端问答、文档和评测都会优先使用这里指定的默认 provider。</p>
+                  {settings.providers.length > 0 ? (
+                    <>
+                      <label htmlFor="drawer-default-provider">默认 provider</label>
+                      <select
+                        id="drawer-default-provider"
+                        value={settings.default_provider ?? ''}
+                        onChange={(event) => onSetDefault(event.target.value)}
+                      >
+                        {settings.providers.map((provider) => (
+                          <option key={provider.name} value={provider.name}>
+                            {builtInLabel(provider)}
+                          </option>
+                        ))}
+                      </select>
+                      <p>桌面端问答、文档和评测都会优先使用这里指定的默认 provider。</p>
+                    </>
+                  ) : (
+                    <>
+                      <strong>当前还没有已保存的 provider</strong>
+                      <p>先从下面添加一个内置服务商或自定义 provider，填写完成后点击“保存设置”，它才会在下次打开时被继续使用。</p>
+                    </>
+                  )}
                   {settingsTestResult ? <div className="settings-test-result">{settingsTestResult}</div> : null}
                 </div>
 
@@ -1346,7 +1547,7 @@ function MessageCard({ message }: { message: ChatMessage }) {
   return (
     <div className={`message-card ${message.role}`}>
       <div className="message-meta">
-        <span>{message.title ?? (message.role === 'user' ? '你' : message.role === 'assistant' ? '脉点' : '系统')}</span>
+        <span>{message.title ?? (message.role === 'user' ? '你' : message.role === 'assistant' ? '脉络' : '系统')}</span>
       </div>
       <Markdown content={message.content} />
     </div>
@@ -1357,7 +1558,7 @@ function PendingMessage({ text }: { text: string }) {
   return (
     <div className="message-card assistant pending">
       <div className="message-meta">
-        <span>脉点</span>
+        <span>脉络</span>
       </div>
       <div className="pending-line">
         <span className="pending-dot" />

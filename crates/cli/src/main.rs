@@ -155,6 +155,13 @@ enum Command {
         #[arg(long)]
         provider: Option<String>,
     },
+    /// Check whether the current project is ready for the full loci workflow
+    Doctor {
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+        #[arg(long)]
+        provider: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -285,6 +292,9 @@ async fn main() -> Result<()> {
             path,
             provider,
         } => cmd_model(action, &resolve_command_path(path)?, provider.as_deref()).await,
+        Command::Doctor { path, provider } => {
+            cmd_doctor(&resolve_command_path(path)?, provider.as_deref()).await
+        }
     }
 }
 
@@ -340,7 +350,7 @@ async fn build_graph(path: &PathBuf, index: &loci_codebase::CodebaseIndex) -> Re
         .summary
         .files
         .iter()
-        .filter(|file| file.language.is_code())
+        .filter(|file| file.language.is_graph_source())
     {
         let parsed = parsed_by_path
             .get(&file.path.to_string_lossy().to_string())
@@ -350,7 +360,12 @@ async fn build_graph(path: &PathBuf, index: &loci_codebase::CodebaseIndex) -> Re
             kind: NodeKind::File,
             name: file.relative_path.clone(),
             file_path: Some(file.path.to_string_lossy().to_string()),
-            description: parsed.and_then(|pf| pf.doc_comment.clone()),
+            description: parsed.and_then(|pf| pf.doc_comment.clone()).or_else(|| {
+                Some(format!(
+                    "{:?} file, {} lines",
+                    file.language, file.line_count
+                ))
+            }),
             raw_source: None,
             created_at: Utc::now(),
         };
@@ -545,7 +560,6 @@ async fn cmd_ask(question: Option<&str>, path: &PathBuf, provider: Option<&str>)
     }
 
     let mem_store = MemoryStore::new(&memory_db_path(path)).await?;
-    let kb_store = KnowledgeStore::new(&knowledge_db_path(path)).await?;
     let vector_index = VectorIndex::new(store.pool.clone()).await?;
     let has_embeddings = vector_index.count().await? > 0;
 
@@ -559,7 +573,6 @@ async fn cmd_ask(question: Option<&str>, path: &PathBuf, provider: Option<&str>)
             &vector_index,
             has_embeddings,
             &mem_store,
-            &kb_store,
         )
         .await?;
         println!("{}", answer);
@@ -588,15 +601,16 @@ async fn cmd_ask(question: Option<&str>, path: &PathBuf, provider: Option<&str>)
                 let graph_ctx =
                     build_graph_context(&q, &q_vec, &graph, &vector_index, has_embeddings).await;
                 let mem_ctx = build_memory_context(&q_vec, &mem_store).await;
-                let kb_ctx = build_kb_context(&q_vec, &kb_store).await;
-
                 // System prompt (only first turn)
                 if session_history.is_empty() {
                     session_history.push(Message {
                         role: Role::System,
                         content: format!(
-                            "You are a codebase understanding assistant.\n\n## Knowledge Graph\n{}{}{}\n\nAnswer accurately.",
-                            graph_ctx, mem_ctx, kb_ctx
+                            "You are a codebase understanding assistant.\n\
+                             Treat the knowledge graph as the source of truth for project facts.\n\
+                             Use session memory only as conversational context, not as authoritative project fact.\n\n\
+                             ## Knowledge Graph\n{}{}\n\nAnswer accurately and call out uncertainty when evidence is weak.",
+                            graph_ctx, mem_ctx
                         ),
                     });
                 }
@@ -622,7 +636,6 @@ async fn cmd_ask(question: Option<&str>, path: &PathBuf, provider: Option<&str>)
                             &store,
                             &vector_index,
                             &mem_store,
-                            &kb_store,
                         )
                         .await;
                     }
@@ -648,17 +661,17 @@ async fn do_ask(
     vector_index: &VectorIndex,
     has_embeddings: bool,
     mem_store: &MemoryStore,
-    kb_store: &KnowledgeStore,
 ) -> Result<String> {
     let q_vec = llm.embed(question).await.ok();
     let graph_ctx =
         build_graph_context(question, &q_vec, graph, vector_index, has_embeddings).await;
     let mem_ctx = build_memory_context(&q_vec, mem_store).await;
-    let kb_ctx = build_kb_context(&q_vec, kb_store).await;
-
     let system = format!(
-        "You are a codebase understanding assistant.\n\n## Knowledge Graph\n{}{}{}\n\nAnswer accurately.",
-        graph_ctx, mem_ctx, kb_ctx
+        "You are a codebase understanding assistant.\n\
+         Treat the knowledge graph as the source of truth for project facts.\n\
+         Use session memory only as conversational context, not as authoritative project fact.\n\n\
+         ## Knowledge Graph\n{}{}\n\nAnswer accurately and call out uncertainty when evidence is weak.",
+        graph_ctx, mem_ctx
     );
     let response = llm
         .chat(
@@ -689,7 +702,6 @@ async fn do_ask(
         graph_store,
         vector_index,
         mem_store,
-        kb_store,
     )
     .await;
 
@@ -704,29 +716,18 @@ async fn persist_answer_artifacts(
     graph_store: &GraphStore,
     vector_index: &VectorIndex,
     mem_store: &MemoryStore,
-    kb_store: &KnowledgeStore,
 ) {
     let mem_text = format!("Q: {}\nA: {}", question, &answer[..answer.len().min(500)]);
     let mem_vec = llm.embed(&mem_text).await.ok();
     let _ = remember(mem_store, &mem_text, MemoryScope::Session, None, mem_vec).await;
 
-    auto_extract_knowledge(
-        question,
-        answer,
-        llm,
-        kb_store,
-        graph,
-        graph_store,
-        vector_index,
-    )
-    .await;
+    auto_extract_knowledge(question, answer, llm, graph, graph_store, vector_index).await;
 }
 
 async fn auto_extract_knowledge(
     question: &str,
     answer: &str,
     llm: &dyn LlmClient,
-    _kb: &KnowledgeStore,
     graph: &KnowledgeGraph,
     graph_store: &GraphStore,
     vector_index: &VectorIndex,
@@ -750,10 +751,23 @@ async fn auto_extract_knowledge(
     {
         let t = t.trim().to_string();
         if t != "SKIP" && !t.is_empty() {
+            let node_kind = if is_decision_question(question) {
+                NodeKind::Decision
+            } else {
+                NodeKind::Concept
+            };
             let concept = Node {
                 id: Uuid::new_v4(),
-                kind: NodeKind::Concept,
-                name: format!("Insight: {}", question.chars().take(80).collect::<String>()),
+                kind: node_kind.clone(),
+                name: format!(
+                    "{}: {}",
+                    if node_kind == NodeKind::Decision {
+                        "Decision"
+                    } else {
+                        "Insight"
+                    },
+                    question.chars().take(80).collect::<String>()
+                ),
                 file_path: None,
                 description: Some(t.clone()),
                 raw_source: Some(format!("Q: {}\nA: {}", question, answer)),
@@ -794,73 +808,24 @@ async fn build_graph_context(
     vi: &VectorIndex,
     has_emb: bool,
 ) -> String {
-    if has_emb {
-        if let Some(ref qv) = q_vec {
-            if let Ok(hits) = vi.search(qv, 30).await {
-                let trace_query = is_trace_question(question);
-                let mut ranked_ids: Vec<Uuid> = if trace_query {
-                    let mut preferred: Vec<Uuid> = hits
-                        .iter()
-                        .filter_map(|(id, _)| {
-                            graph
-                                .nodes
-                                .iter()
-                                .find(|n| {
-                                    n.id == *id
-                                        && matches!(n.kind, NodeKind::Decision | NodeKind::Commit)
-                                })
-                                .map(|n| n.id)
-                        })
-                        .collect();
-                    let mut fallback: Vec<Uuid> = hits
-                        .iter()
-                        .filter_map(|(id, _)| {
-                            graph
-                                .nodes
-                                .iter()
-                                .find(|n| {
-                                    n.id == *id
-                                        && !matches!(n.kind, NodeKind::Decision | NodeKind::Commit)
-                                })
-                                .map(|n| n.id)
-                        })
-                        .collect();
-                    preferred.append(&mut fallback);
-                    preferred
-                } else {
-                    hits.into_iter().map(|(id, _)| id).collect()
-                };
+    let trace_query = is_trace_question(question);
+    let decision_query = is_decision_question(question);
 
-                ranked_ids.truncate(if trace_query { 18 } else { 20 });
-                let mut ids: std::collections::HashSet<Uuid> = ranked_ids.into_iter().collect();
-                for id in ids.clone() {
-                    for (_, n) in graph.neighbors(id) {
-                        ids.insert(n.id);
-                    }
-                }
-                let mut context = graph.to_context_str_filtered(&ids);
-                if trace_query {
-                    let decision_section = graph
-                        .nodes
-                        .iter()
-                        .filter(|n| ids.contains(&n.id) && n.kind == NodeKind::Decision)
-                        .map(|n| {
-                            format!("- {}: {}", n.name, n.description.as_deref().unwrap_or(""))
-                        })
-                        .collect::<Vec<_>>();
-                    if !decision_section.is_empty() {
-                        context = format!(
-                            "## Prior Decisions\n{}\n\n{}",
-                            decision_section.join("\n"),
-                            context
-                        );
-                    }
-                }
-                return context;
+    let ids = if has_emb {
+        if let Some(ref qv) = q_vec {
+            if let Ok(hits) = vi.search(qv, 40).await {
+                build_ranked_context_ids(question, graph, hits)
+            } else {
+                default_context_ids(graph, decision_query, trace_query)
             }
+        } else {
+            default_context_ids(graph, decision_query, trace_query)
         }
-    }
-    graph.to_context_str(None)
+    } else {
+        default_context_ids(graph, decision_query, trace_query)
+    };
+
+    render_graph_context(graph, &ids, decision_query, trace_query)
 }
 
 fn is_trace_question(question: &str) -> bool {
@@ -881,6 +846,171 @@ fn is_trace_question(question: &str) -> bool {
     .any(|needle| q.contains(needle))
 }
 
+fn is_decision_question(question: &str) -> bool {
+    let q = question.to_lowercase();
+    [
+        "why",
+        "为什么",
+        "原因",
+        "设计",
+        "决策",
+        "tradeoff",
+        "权衡",
+        "rationale",
+        "architecture",
+        "架构",
+        "handoff",
+        "onboarding",
+        "演进",
+        "history",
+        "blame",
+        "trace",
+    ]
+    .iter()
+    .any(|needle| q.contains(needle))
+}
+
+fn node_priority(kind: &NodeKind, decision_query: bool, trace_query: bool) -> usize {
+    match (trace_query, decision_query, kind) {
+        (true, _, NodeKind::Decision) => 0,
+        (true, _, NodeKind::Commit) => 1,
+        (true, _, NodeKind::Concept) => 2,
+        (true, _, NodeKind::File) => 3,
+        (true, _, _) => 4,
+        (false, true, NodeKind::Decision) => 0,
+        (false, true, NodeKind::Concept) => 1,
+        (false, true, NodeKind::File) => 2,
+        (false, true, NodeKind::Function) => 3,
+        (false, true, NodeKind::Module) => 3,
+        (false, true, _) => 4,
+        (false, false, NodeKind::File) => 0,
+        (false, false, NodeKind::Module) => 1,
+        (false, false, NodeKind::Function) => 2,
+        (false, false, NodeKind::Decision) => 3,
+        (false, false, NodeKind::Concept) => 4,
+        (false, false, _) => 5,
+    }
+}
+
+fn default_context_ids(
+    graph: &KnowledgeGraph,
+    decision_query: bool,
+    trace_query: bool,
+) -> std::collections::HashSet<Uuid> {
+    let mut ids = std::collections::HashSet::new();
+    let mut ranked = graph.nodes.iter().collect::<Vec<_>>();
+    ranked.sort_by_key(|node| node_priority(&node.kind, decision_query, trace_query));
+
+    for node in ranked.into_iter().take(if trace_query { 18 } else { 20 }) {
+        ids.insert(node.id);
+    }
+
+    graph.expand_ids_with_neighbors(&ids, 1)
+}
+
+fn build_ranked_context_ids(
+    question: &str,
+    graph: &KnowledgeGraph,
+    hits: Vec<(Uuid, f32)>,
+) -> std::collections::HashSet<Uuid> {
+    let trace_query = is_trace_question(question);
+    let decision_query = is_decision_question(question);
+    let mut ranked = hits
+        .into_iter()
+        .filter_map(|(id, score)| {
+            graph.node_by_id(id).map(|node| {
+                (
+                    id,
+                    node_priority(&node.kind, decision_query, trace_query),
+                    score,
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+
+    ranked.sort_by(|left, right| {
+        left.1.cmp(&right.1).then_with(|| {
+            right
+                .2
+                .partial_cmp(&left.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    });
+
+    let mut ids = std::collections::HashSet::new();
+    for (id, _, _) in ranked.into_iter().take(if trace_query { 18 } else { 20 }) {
+        ids.insert(id);
+    }
+
+    graph.expand_ids_with_neighbors(&ids, if trace_query { 2 } else { 1 })
+}
+
+fn render_graph_context(
+    graph: &KnowledgeGraph,
+    ids: &std::collections::HashSet<Uuid>,
+    decision_query: bool,
+    trace_query: bool,
+) -> String {
+    let mut sections = Vec::new();
+
+    let decisions = graph
+        .nodes
+        .iter()
+        .filter(|node| ids.contains(&node.id) && node.kind == NodeKind::Decision)
+        .map(|node| {
+            format!(
+                "- {}: {}",
+                node.name,
+                node.description.as_deref().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>();
+    if !decisions.is_empty() {
+        sections.push(format!("## Prior Decisions\n{}", decisions.join("\n")));
+    }
+
+    let concepts = graph
+        .nodes
+        .iter()
+        .filter(|node| ids.contains(&node.id) && node.kind == NodeKind::Concept)
+        .map(|node| {
+            format!(
+                "- {}: {}",
+                node.name,
+                node.description.as_deref().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>();
+    if decision_query && !concepts.is_empty() {
+        sections.push(format!("## Relevant Concepts\n{}", concepts.join("\n")));
+    }
+
+    if trace_query {
+        let commits = graph
+            .nodes
+            .iter()
+            .filter(|node| ids.contains(&node.id) && node.kind == NodeKind::Commit)
+            .map(|node| {
+                format!(
+                    "- {}: {}",
+                    node.name,
+                    node.description.as_deref().unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>();
+        if !commits.is_empty() {
+            sections.push(format!("## Relevant Commits\n{}", commits.join("\n")));
+        }
+    }
+
+    sections.push(format!(
+        "## Graph Context\n{}",
+        graph.to_context_str_filtered(ids)
+    ));
+
+    sections.join("\n\n")
+}
+
 async fn build_memory_context(q_vec: &Option<Vec<f32>>, store: &MemoryStore) -> String {
     let mems = store
         .recall(q_vec.as_deref(), Some(MemoryScope::Session), None, 5)
@@ -893,24 +1023,6 @@ async fn build_memory_context(q_vec: &Option<Vec<f32>>, store: &MemoryStore) -> 
         "\n## Past context\n{}",
         mems.iter()
             .map(|m| format!("- {}", m.content))
-            .collect::<Vec<_>>()
-            .join("\n")
-    )
-}
-
-async fn build_kb_context(q_vec: &Option<Vec<f32>>, store: &KnowledgeStore) -> String {
-    let items = store
-        .search_external(q_vec.as_deref(), None, 3)
-        .await
-        .unwrap_or_default();
-    if items.is_empty() {
-        return String::new();
-    }
-    format!(
-        "\n## Knowledge base\n{}",
-        items
-            .iter()
-            .map(|k| format!("---\n{}", &k.content[..k.content.len().min(800)]))
             .collect::<Vec<_>>()
             .join("\n")
     )
@@ -1035,13 +1147,11 @@ async fn cmd_knowledge(
 
         KnowledgeAction::Search { query } => {
             let cfg = BsConfig::load(path).unwrap_or_default();
-            let q_vec = cfg.build_client(provider).ok().and_then(|llm| {
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current()
-                        .block_on(llm.embed(&query))
-                        .ok()
-                })
-            });
+            let q_vec = if let Ok(llm) = cfg.build_client(provider) {
+                llm.embed(&query).await.ok()
+            } else {
+                None
+            };
             let results = kb
                 .search_external(q_vec.as_deref(), Some(&query), 5)
                 .await?;
@@ -1060,16 +1170,17 @@ async fn cmd_knowledge(
 
         KnowledgeAction::Watch { dir } => {
             use notify::{recommended_watcher, Event, EventKind, RecursiveMode, Watcher};
-            use std::sync::mpsc;
 
             println!("Watching {} for changes (Ctrl+C to stop)...", dir.display());
-            let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
-            let mut watcher = recommended_watcher(tx)?;
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<notify::Result<Event>>();
+            let mut watcher = recommended_watcher(move |res| {
+                let _ = tx.send(res);
+            })?;
             watcher.watch(&dir, RecursiveMode::Recursive)?;
 
             let cfg = BsConfig::load(path).unwrap_or_default();
 
-            for res in rx {
+            while let Some(res) = rx.recv().await {
                 if let Ok(event) = res {
                     if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
                         for p in event.paths {
@@ -1079,13 +1190,13 @@ async fn cmd_knowledge(
                                     print!("  Ingesting {}... ", p.display());
                                     let llm = cfg.build_client(None).ok();
                                     let embedding = if let Some(ref llm) = llm {
-                                        std::fs::read_to_string(&p).ok().and_then(|s| {
-                                            tokio::task::block_in_place(|| {
-                                                tokio::runtime::Handle::current()
-                                                    .block_on(llm.embed(&s[..s.len().min(2000)]))
-                                                    .ok()
-                                            })
-                                        })
+                                        if let Ok(content) = std::fs::read_to_string(&p) {
+                                            llm.embed(&content[..content.len().min(2000)])
+                                                .await
+                                                .ok()
+                                        } else {
+                                            None
+                                        }
                                     } else {
                                         None
                                     };
@@ -1196,10 +1307,25 @@ struct ProjectEntry {
 }
 
 fn registry_path() -> std::path::PathBuf {
-    let dir =
-        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/bs");
+    let dir = config_root_dir();
     std::fs::create_dir_all(&dir).ok();
     dir.join("projects.json")
+}
+
+fn config_root_dir() -> std::path::PathBuf {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return std::path::PathBuf::from(appdata).join("bs");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return std::path::PathBuf::from(home).join(".config/bs");
+    }
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        return std::path::PathBuf::from(user_profile).join(".config/bs");
+    }
+    match (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
+        (Ok(drive), Ok(path)) => std::path::PathBuf::from(format!("{drive}{path}")).join(".config/bs"),
+        _ => std::path::PathBuf::from(".bs"),
+    }
 }
 
 fn load_registry() -> ProjectRegistry {
@@ -1349,9 +1475,6 @@ async fn cmd_serve(path: &PathBuf, port: u16, provider: Option<&str>) -> Result<
                 let store = GraphStore::new(&graph_db_path(&srv.path)).await.unwrap();
                 let graph = store.load_graph().await.unwrap_or_default();
                 let mem_store = MemoryStore::new(&memory_db_path(&srv.path)).await.unwrap();
-                let kb_store = KnowledgeStore::new(&knowledge_db_path(&srv.path))
-                    .await
-                    .unwrap();
                 let vi = VectorIndex::new(store.pool.clone()).await.unwrap();
                 let has_emb = vi.count().await.unwrap_or(0) > 0;
                 do_ask(
@@ -1362,7 +1485,6 @@ async fn cmd_serve(path: &PathBuf, port: u16, provider: Option<&str>) -> Result<
                     &vi,
                     has_emb,
                     &mem_store,
-                    &kb_store,
                 )
                 .await
                 .unwrap_or_else(|e| e.to_string())
@@ -1440,6 +1562,179 @@ async fn cmd_model(action: ModelAction, path: &PathBuf, provider: Option<&str>) 
             Ok(())
         }
     }
+}
+
+async fn cmd_doctor(path: &PathBuf, provider: Option<&str>) -> Result<()> {
+    let cfg = BsConfig::load(path).unwrap_or_default();
+    let graph_path = bs_dir(path).join("graph.db");
+    let memory_path = bs_dir(path).join("memory.db");
+    let knowledge_path = bs_dir(path).join("knowledge.db");
+    let configured_provider_names = cfg.provider_names();
+    let selected_provider = provider
+        .map(str::to_string)
+        .or(cfg.default_provider.clone())
+        .or_else(|| {
+            configured_provider_names
+                .first()
+                .map(|name| (*name).to_string())
+        });
+    let provider_ready = selected_provider
+        .as_deref()
+        .map(|name| configured_provider_names.iter().any(|item| *item == name))
+        .unwrap_or(false);
+
+    let mut node_count = 0usize;
+    let mut edge_count = 0usize;
+    let mut decision_count = 0usize;
+    let mut commit_count = 0usize;
+
+    if graph_path.exists() {
+        if let Ok(store) = GraphStore::new(&graph_db_path(path)).await {
+            if let Ok(graph) = store.load_graph().await {
+                node_count = graph.nodes.len();
+                edge_count = graph.edges.len();
+                decision_count = graph
+                    .nodes
+                    .iter()
+                    .filter(|node| node.kind == NodeKind::Decision)
+                    .count();
+                commit_count = graph
+                    .nodes
+                    .iter()
+                    .filter(|node| node.kind == NodeKind::Commit)
+                    .count();
+            }
+        }
+    }
+
+    let indexed = graph_path.exists() && node_count > 0;
+
+    println!("# loci Doctor\n");
+    println!("- Project path: {}", path.display());
+    println!(
+        "- Project exists: {}",
+        if path.exists() { "yes" } else { "no" }
+    );
+    println!(
+        "- Index status: {}",
+        if indexed {
+            format!("ready ({} nodes, {} edges)", node_count, edge_count)
+        } else {
+            "missing".to_string()
+        }
+    );
+    println!(
+        "- Trace evidence: {}",
+        if indexed {
+            format!("{} decisions, {} commits", decision_count, commit_count)
+        } else {
+            "not available yet".to_string()
+        }
+    );
+    println!(
+        "- Model config: {}",
+        if configured_provider_names.is_empty() {
+            "missing".to_string()
+        } else {
+            format!("ready ({} providers)", configured_provider_names.len())
+        }
+    );
+    println!(
+        "- Default provider: {}",
+        cfg.default_provider.as_deref().unwrap_or("not set")
+    );
+    println!(
+        "- Selected provider: {}",
+        selected_provider.as_deref().unwrap_or("not set")
+    );
+    println!(
+        "- Selected provider configured: {}",
+        if provider_ready { "yes" } else { "no" }
+    );
+    println!(
+        "- Memory store: {}",
+        if memory_path.exists() {
+            "present"
+        } else {
+            "not created yet"
+        }
+    );
+    println!(
+        "- Knowledge store: {}",
+        if knowledge_path.exists() {
+            "present"
+        } else {
+            "not created yet"
+        }
+    );
+    println!();
+    println!("## Next Steps\n");
+
+    if !path.exists() {
+        println!(
+            "- Fix the project path first, then rerun `loci doctor --path {}`.",
+            path.display()
+        );
+        return Ok(());
+    }
+
+    if !indexed {
+        println!(
+            "- Run `loci index --path {}` to build the local graph.",
+            path.display()
+        );
+    }
+
+    if configured_provider_names.is_empty() {
+        println!(
+            "- Create model config: `cp config.example.toml {}`",
+            bs_dir(path).join("config.toml").display()
+        );
+        println!("- Then run `loci model test --path {}`.", path.display());
+    } else if !provider_ready {
+        println!(
+            "- Pick a configured provider with `--provider <name>`, or set `default_provider` in `.bs/config.toml`."
+        );
+        println!(
+            "- Available providers: {}",
+            configured_provider_names.join(", ")
+        );
+    } else {
+        println!(
+            "- Verify the model connection: `loci model test --path {}`.",
+            path.display()
+        );
+    }
+
+    if indexed && provider_ready {
+        println!("- Full workflow is ready after model connectivity passes:");
+        println!(
+            "  loci ask \"这个项目的核心模块是什么？\" --path {}",
+            path.display()
+        );
+        println!(
+            "  loci explain crates/cli/src/main.rs --path {}",
+            path.display()
+        );
+        println!("  loci diff --path {}", path.display());
+        println!("  loci doc onboarding --path {}", path.display());
+        println!("  loci eval --path {}", path.display());
+    } else {
+        println!(
+            "- Once index and model config are ready, rerun `loci doctor --path {}`.",
+            path.display()
+        );
+    }
+
+    if indexed && decision_count == 0 {
+        println!(
+            "- Trace graph is still shallow. Run `loci explain <file> --path {}` or `loci diff --path {}` to write decisions back into the graph.",
+            path.display(),
+            path.display()
+        );
+    }
+
+    Ok(())
 }
 
 async fn build_graph_static(path: &PathBuf, index: &loci_codebase::CodebaseIndex) -> Result<()> {
@@ -1520,6 +1815,30 @@ async fn cmd_explain(target: &str, path: &PathBuf, provider: Option<&str>) -> Re
         .await?;
     if let loci_llm::LlmResponse::Text(t) = response {
         println!("{}", t);
+
+        if let Some(file_path) = node.file_path.as_deref() {
+            if let Ok(src) = std::fs::read_to_string(file_path) {
+                let llm: Arc<dyn LlmClient> = Arc::from(llm);
+                let trace = TraceAgent::new(llm.clone());
+                if let Ok(report) = trace.explain_file(path, file_path, &src).await {
+                    let mut anchor_ids = vec![node.id];
+                    if let Some(file_node) = graph.find_file_node(file_path) {
+                        anchor_ids.push(file_node.id);
+                    }
+                    let vi = VectorIndex::new(store.pool.clone()).await?;
+                    let _ = persist_trace_decision(
+                        &store,
+                        &vi,
+                        &*llm,
+                        &graph,
+                        &anchor_ids,
+                        &format!("Decision: {}", target),
+                        &report,
+                    )
+                    .await;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1557,12 +1876,27 @@ async fn cmd_diff(commit: &str, path: &PathBuf, provider: Option<&str>) -> Resul
     let store = GraphStore::new(&graph_db_path(path)).await?;
     let graph = store.load_graph().await?;
     let vi = VectorIndex::new(store.pool.clone()).await?;
-    let anchors: Vec<Uuid> = graph
+    let mut anchors: Vec<Uuid> = graph
         .nodes
         .iter()
         .filter(|n| n.kind == NodeKind::Commit && (n.name == commit || n.name.starts_with(commit)))
         .map(|n| n.id)
         .collect();
+    let changed_files = extract_changed_files_from_diff(&diff);
+    anchors.extend(
+        graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.kind == NodeKind::File
+                    && changed_files.iter().any(|changed| {
+                        node.name == *changed || node.file_path.as_deref() == Some(changed.as_str())
+                    })
+            })
+            .map(|node| node.id),
+    );
+    anchors.sort_unstable();
+    anchors.dedup();
     let _ = persist_trace_decision(
         &store,
         &vi,
@@ -1633,10 +1967,8 @@ async fn cmd_trace(target: &str, path: &PathBuf) -> Result<()> {
         return Ok(());
     };
 
-    let mut ids: std::collections::HashSet<Uuid> = std::collections::HashSet::from([anchor.id]);
-    for (_, node) in graph.neighbors(anchor.id) {
-        ids.insert(node.id);
-    }
+    let seed_ids: std::collections::HashSet<Uuid> = std::collections::HashSet::from([anchor.id]);
+    let ids = graph.expand_ids_with_neighbors(&seed_ids, 2);
 
     let decisions: Vec<&Node> = graph
         .nodes
@@ -1838,7 +2170,6 @@ async fn cmd_eval(path: &PathBuf, provider: Option<&str>, output: Option<&PathBu
     }
 
     let mem_store = MemoryStore::new(&memory_db_path(path)).await?;
-    let kb_store = KnowledgeStore::new(&knowledge_db_path(path)).await?;
     let vector_index = VectorIndex::new(store.pool.clone()).await?;
     let has_embeddings = vector_index.count().await? > 0;
 
@@ -1859,7 +2190,6 @@ async fn cmd_eval(path: &PathBuf, provider: Option<&str>, output: Option<&PathBu
             &vector_index,
             has_embeddings,
             &mem_store,
-            &kb_store,
         )
         .await?;
 
@@ -2113,6 +2443,7 @@ async fn persist_trace_evidence_edges(
     anchor_ids: &[Uuid],
     report: &TraceReport,
 ) -> Result<()> {
+    let anchor_scope_ids = collect_anchor_scope_ids(graph, anchor_ids);
     for evidence in &report.evidence {
         let source = evidence.source.to_lowercase();
 
@@ -2138,6 +2469,28 @@ async fn persist_trace_evidence_edges(
         if source.contains("code") || source.contains("file") {
             edge_kind.get_or_insert(EdgeKind::EvidenceFromFile);
             matched_ids.extend(anchor_ids.iter().copied());
+            matched_ids.extend(match_file_or_symbol_ids(
+                graph,
+                &evidence.detail,
+                &anchor_scope_ids,
+            ));
+        }
+
+        if source.contains("diff") {
+            edge_kind.get_or_insert(EdgeKind::EvidenceFromFile);
+            for changed in extract_changed_files_from_diff(&evidence.detail) {
+                matched_ids.extend(
+                    graph
+                        .nodes
+                        .iter()
+                        .filter(|node| {
+                            node.kind == NodeKind::File
+                                && (node.name == changed
+                                    || node.file_path.as_deref() == Some(changed.as_str()))
+                        })
+                        .map(|node| node.id),
+                );
+            }
         }
 
         if source.contains("decision") || source.contains("concept") {
@@ -2282,6 +2635,66 @@ fn extract_commit_hashes(detail: &str) -> Vec<String> {
     hashes
 }
 
+fn extract_changed_files_from_diff(diff: &str) -> Vec<String> {
+    let mut files = diff
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("+++ b/")
+                .or_else(|| line.strip_prefix("--- a/"))
+        })
+        .filter(|line| *line != "/dev/null")
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
+    files.sort();
+    files.dedup();
+    files
+}
+
+fn is_symbol_like_kind(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Function | NodeKind::Struct | NodeKind::Enum | NodeKind::Trait | NodeKind::Module
+    )
+}
+
+fn collect_anchor_scope_ids(
+    graph: &KnowledgeGraph,
+    anchor_ids: &[Uuid],
+) -> std::collections::HashSet<Uuid> {
+    let seeds = anchor_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    graph.expand_ids_with_neighbors(&seeds, 2)
+}
+
+fn match_file_or_symbol_ids(
+    graph: &KnowledgeGraph,
+    detail: &str,
+    anchor_scope_ids: &std::collections::HashSet<Uuid>,
+) -> Vec<Uuid> {
+    let detail_lower = detail.to_lowercase();
+    graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            if !anchor_scope_ids.is_empty() && !anchor_scope_ids.contains(&node.id) {
+                return false;
+            }
+            if node.kind == NodeKind::File {
+                return detail_lower.contains(&node.name.to_lowercase())
+                    || node
+                        .file_path
+                        .as_deref()
+                        .map(|path| detail_lower.contains(&path.to_lowercase()))
+                        .unwrap_or(false);
+            }
+            is_symbol_like_kind(&node.kind) && detail_lower.contains(&node.name.to_lowercase())
+        })
+        .map(|node| node.id)
+        .collect()
+}
+
 fn is_evidence_edge(kind: &EdgeKind) -> bool {
     matches!(
         kind,
@@ -2316,7 +2729,14 @@ fn require_llm(cfg: &BsConfig, provider: Option<&str>) -> Result<Box<dyn LlmClie
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_commit_hashes, is_trace_question};
+    use super::{
+        build_graph_context, extract_changed_files_from_diff, extract_commit_hashes,
+        is_trace_question, persist_trace_evidence_edges,
+    };
+    use chrono::Utc;
+    use loci_agent::{TraceEvidence, TraceReport};
+    use loci_graph::{Edge, GraphStore, KnowledgeGraph, Node, NodeKind, VectorIndex};
+    use uuid::Uuid;
 
     #[test]
     fn extracts_commit_hashes_from_mixed_text() {
@@ -2330,5 +2750,135 @@ mod tests {
         assert!(is_trace_question("why was this designed this way?"));
         assert!(is_trace_question("这个设计为什么这么做？"));
         assert!(!is_trace_question("这个模块有哪些公开函数？"));
+    }
+
+    #[test]
+    fn extracts_changed_files_from_diff_and_dedupes() {
+        let files = extract_changed_files_from_diff(
+            "--- a/src/main.rs\n+++ b/src/main.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n+++ b/src/main.rs",
+        );
+        assert_eq!(
+            files,
+            vec!["src/lib.rs".to_string(), "src/main.rs".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn build_graph_context_prefers_decisions_for_trace_queries() {
+        let db_path = std::env::temp_dir().join(format!("loci-test-{}.db", Uuid::new_v4()));
+        let store = GraphStore::new(&db_path.to_string_lossy()).await.unwrap();
+        let vector_index = VectorIndex::new(store.pool.clone()).await.unwrap();
+        let mut graph = KnowledgeGraph::default();
+
+        let decision = Node {
+            id: Uuid::new_v4(),
+            kind: NodeKind::Decision,
+            name: "Decision: trace pipeline".to_string(),
+            file_path: None,
+            description: Some("Trace should prioritize decision nodes.".to_string()),
+            raw_source: None,
+            created_at: Utc::now(),
+        };
+        let function = Node {
+            id: Uuid::new_v4(),
+            kind: NodeKind::Function,
+            name: "handle_trace".to_string(),
+            file_path: Some("src/main.rs".to_string()),
+            description: Some("Function entry point.".to_string()),
+            raw_source: None,
+            created_at: Utc::now(),
+        };
+        graph.add_node(decision.clone());
+        graph.add_node(function.clone());
+        vector_index.upsert(decision.id, &[1.0, 0.0]).await.unwrap();
+        vector_index.upsert(function.id, &[1.0, 0.0]).await.unwrap();
+
+        let context = build_graph_context(
+            "为什么 trace 要这样设计？",
+            &Some(vec![1.0, 0.0]),
+            &graph,
+            &vector_index,
+            true,
+        )
+        .await;
+
+        assert!(context.contains("## Prior Decisions"));
+        assert!(context.contains("Decision: trace pipeline"));
+    }
+
+    #[tokio::test]
+    async fn persist_trace_evidence_edges_links_file_and_symbol_mentions() {
+        let db_path = std::env::temp_dir().join(format!("loci-test-{}.db", Uuid::new_v4()));
+        let store = GraphStore::new(&db_path.to_string_lossy()).await.unwrap();
+        store.clear().await.unwrap();
+
+        let mut graph = KnowledgeGraph::default();
+        let file = Node {
+            id: Uuid::new_v4(),
+            kind: NodeKind::File,
+            name: "src/main.rs".to_string(),
+            file_path: Some("src/main.rs".to_string()),
+            description: None,
+            raw_source: None,
+            created_at: Utc::now(),
+        };
+        let symbol = Node {
+            id: Uuid::new_v4(),
+            kind: NodeKind::Function,
+            name: "bootstrap".to_string(),
+            file_path: Some("src/main.rs".to_string()),
+            description: None,
+            raw_source: None,
+            created_at: Utc::now(),
+        };
+        let decision = Node {
+            id: Uuid::new_v4(),
+            kind: NodeKind::Decision,
+            name: "Decision: bootstrap".to_string(),
+            file_path: None,
+            description: Some("Boot sequence rationale".to_string()),
+            raw_source: None,
+            created_at: Utc::now(),
+        };
+
+        graph.add_node(file.clone());
+        graph.add_node(symbol.clone());
+        graph.add_node(decision.clone());
+        graph.add_edge(Edge {
+            id: Uuid::new_v4(),
+            from: file.id,
+            to: symbol.id,
+            kind: loci_graph::EdgeKind::Contains,
+            label: None,
+        });
+        store.save_node(&file).await.unwrap();
+        store.save_node(&symbol).await.unwrap();
+        store.save_node(&decision).await.unwrap();
+
+        let report = TraceReport {
+            summary: "bootstrap is justified by startup constraints".to_string(),
+            timeline: vec![],
+            evidence: vec![TraceEvidence {
+                source: "code".to_string(),
+                detail: "src/main.rs uses bootstrap during startup".to_string(),
+            }],
+            confidence: "high".to_string(),
+            open_questions: vec![],
+        };
+
+        persist_trace_evidence_edges(&store, &graph, decision.id, &[file.id], &report)
+            .await
+            .unwrap();
+
+        let persisted = store.load_graph().await.unwrap();
+        let matched_targets = persisted
+            .edges
+            .iter()
+            .filter(|edge| edge.from == decision.id)
+            .map(|edge| edge.to)
+            .collect::<Vec<_>>();
+
+        assert!(matched_targets.contains(&file.id));
+        assert!(matched_targets.contains(&symbol.id));
     }
 }

@@ -85,8 +85,15 @@ impl Tool for ShellExec {
         }
 
         let timeout = params["timeout_secs"].as_u64().unwrap_or(30);
-        let mut builder = Command::new("sh");
-        builder.arg("-c").arg(cmd);
+        let mut builder = if cfg!(windows) {
+            let mut command = Command::new("cmd");
+            command.arg("/C").arg(cmd);
+            command
+        } else {
+            let mut command = Command::new("sh");
+            command.arg("-c").arg(cmd);
+            command
+        };
         if let Some(dir) = &ctx.working_dir {
             builder.current_dir(dir);
         }

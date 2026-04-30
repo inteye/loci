@@ -1,8 +1,8 @@
 use chrono::Utc;
+use loci_agent::{TraceAgent, TraceReport};
 use loci_codebase::{CodebaseIndexer, GitHistory, ParsedFile, SymbolKind};
 use loci_core::types::{MemoryScope, Message, Role};
 use loci_graph::{Edge, EdgeKind, GraphStore, KnowledgeGraph, Node, NodeKind, VectorIndex};
-use loci_knowledge::KnowledgeStore;
 use loci_llm::{
     config::{BsConfig, ProviderConfig, ProviderProtocol},
     LlmClient,
@@ -102,36 +102,206 @@ struct EvalSample {
     prompt: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ProjectEntry {
+    name: String,
+    path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ProjectRegistry {
+    projects: Vec<ProjectEntry>,
+    active: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedProjectData {
+    pub url: String,
+    pub project_name: String,
+    pub project_path: String,
+    pub reused_existing: bool,
+    pub message: String,
+}
+
 fn normalize_project_path(path: impl AsRef<Path>) -> String {
-    std::fs::canonicalize(path.as_ref())
-        .unwrap_or_else(|_| path.as_ref().to_path_buf())
+    let path = path.as_ref();
+    let raw = path.to_string_lossy();
+    let expanded = if raw == "~" || raw.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            let suffix = raw.strip_prefix("~/").unwrap_or("");
+            PathBuf::from(home).join(suffix)
+        } else {
+            path.to_path_buf()
+        }
+    } else {
+        path.to_path_buf()
+    };
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(expanded)
+    };
+
+    std::fs::canonicalize(&absolute)
+        .unwrap_or(absolute)
         .to_string_lossy()
         .to_string()
 }
 
 fn registry_path() -> PathBuf {
-    let dir = PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config/bs");
+    let dir = config_root_dir();
     std::fs::create_dir_all(&dir).ok();
     dir.join("projects.json")
 }
 
-fn default_project_path() -> String {
-    let active = std::fs::read_to_string(registry_path())
+fn config_root_dir() -> PathBuf {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return PathBuf::from(appdata).join("bs");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".config/bs");
+    }
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        return PathBuf::from(user_profile).join(".config/bs");
+    }
+    match (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
+        (Ok(drive), Ok(path)) => PathBuf::from(format!("{drive}{path}")).join(".config/bs"),
+        _ => PathBuf::from(".bs"),
+    }
+}
+
+fn load_project_registry() -> ProjectRegistry {
+    std::fs::read_to_string(registry_path())
         .ok()
-        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .and_then(|json| {
-            let active = json.get("active")?.as_str()?.to_string();
-            json.get("projects")?
-                .as_array()?
+        .and_then(|content| serde_json::from_str::<ProjectRegistry>(&content).ok())
+        .unwrap_or_default()
+}
+
+fn save_project_registry(registry: &ProjectRegistry) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(registry).map_err(|e| e.to_string())?;
+    std::fs::write(registry_path(), content).map_err(|e| e.to_string())
+}
+
+fn remember_active_project(
+    project_path: &Path,
+    preferred_name: Option<&str>,
+) -> Result<(), String> {
+    let normalized = normalize_project_path(project_path);
+    let mut registry = load_project_registry();
+    let name = preferred_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .or_else(|| {
+            Path::new(&normalized)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_string())
+        })
+        .unwrap_or_else(|| "project".to_string());
+
+    registry
+        .projects
+        .retain(|project| project.path != normalized);
+    registry.projects.retain(|project| project.name != name);
+    registry.projects.push(ProjectEntry {
+        name: name.clone(),
+        path: normalized,
+    });
+    registry.active = Some(name);
+    save_project_registry(&registry)
+}
+
+fn default_project_path() -> String {
+    let active = {
+        let registry = load_project_registry();
+        registry.active.as_ref().and_then(|active| {
+            registry
+                .projects
                 .iter()
-                .find(|project| {
-                    project.get("name").and_then(|name| name.as_str()) == Some(active.as_str())
-                })
-                .and_then(|project| project.get("path").and_then(|path| path.as_str()))
-                .map(|path| path.to_string())
-        });
+                .find(|project| project.name == *active)
+                .map(|project| project.path.clone())
+        })
+    };
 
     active.unwrap_or_else(|| normalize_project_path("."))
+}
+
+fn github_import_root() -> PathBuf {
+    let base = if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home)
+    } else if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        PathBuf::from(user_profile)
+    } else if let (Ok(drive), Ok(path)) = (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
+        PathBuf::from(format!("{drive}{path}"))
+    } else {
+        PathBuf::from(".")
+    };
+    base.join(".loci").join("projects")
+}
+
+fn parse_github_project_url(url: &str) -> Result<(String, String, String), String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("请输入 GitHub 仓库地址。".to_string());
+    }
+
+    let (slug, clone_protocol) = if let Some(rest) = trimmed.strip_prefix("git@github.com:") {
+        (rest, "ssh")
+    } else if let Some(rest) = trimmed.strip_prefix("https://github.com/") {
+        (rest, "https")
+    } else if let Some(rest) = trimmed.strip_prefix("http://github.com/") {
+        (rest, "https")
+    } else if let Some(rest) = trimmed.strip_prefix("github.com/") {
+        (rest, "https")
+    } else {
+        return Err("目前只支持 GitHub 仓库地址，例如 https://github.com/owner/repo".to_string());
+    };
+
+    let slug = slug
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(slug)
+        .trim_end_matches(".git");
+    let parts = slug
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return Err("GitHub 仓库地址格式不完整，应包含 owner/repo。".to_string());
+    }
+
+    let owner = parts[0].to_string();
+    let repo = parts[1].to_string();
+    let clone_url = match clone_protocol {
+        "ssh" => format!("git@github.com:{owner}/{repo}.git"),
+        _ => format!("https://github.com/{owner}/{repo}.git"),
+    };
+    Ok((clone_url, owner, repo))
+}
+
+fn choose_clone_destination(root: &Path, folder_name: &str) -> (PathBuf, bool) {
+    let preferred = root.join(folder_name);
+    if preferred.join(".git").exists() {
+        return (preferred, true);
+    }
+    if !preferred.exists() {
+        return (preferred, false);
+    }
+
+    for index in 2..1000 {
+        let candidate = root.join(format!("{folder_name}-{index}"));
+        if !candidate.exists() {
+            return (candidate, false);
+        }
+    }
+
+    (
+        root.join(format!("{folder_name}-{}", Uuid::new_v4())),
+        false,
+    )
 }
 
 fn resolve_project_path(project_path: &str) -> PathBuf {
@@ -155,13 +325,6 @@ fn graph_db_path(path: &Path) -> String {
 
 fn memory_db_path(path: &Path) -> String {
     bs_dir(path).join("memory.db").to_string_lossy().to_string()
-}
-
-fn knowledge_db_path(path: &Path) -> String {
-    bs_dir(path)
-        .join("knowledge.db")
-        .to_string_lossy()
-        .to_string()
 }
 
 fn map_node(node: &Node) -> GraphNode {
@@ -541,7 +704,7 @@ async fn build_graph_local(project_path: &Path) -> Result<(usize, usize, usize, 
         .summary
         .files
         .iter()
-        .filter(|file| file.language.is_code())
+        .filter(|file| file.language.is_graph_source())
     {
         let file_path = file.path.to_string_lossy().to_string();
         let parsed = parsed_by_path.get(&file_path).copied();
@@ -550,9 +713,12 @@ async fn build_graph_local(project_path: &Path) -> Result<(usize, usize, usize, 
             kind: NodeKind::File,
             name: file.relative_path.clone(),
             file_path: Some(file_path.clone()),
-            description: parsed
-                .and_then(|pf| pf.doc_comment.clone())
-                .or_else(|| Some(format!("{} lines", file.line_count))),
+            description: parsed.and_then(|pf| pf.doc_comment.clone()).or_else(|| {
+                Some(format!(
+                    "{:?} file, {} lines",
+                    file.language, file.line_count
+                ))
+            }),
             raw_source: None,
             created_at: Utc::now(),
         };
@@ -692,6 +858,171 @@ fn is_trace_question(question: &str) -> bool {
     .any(|needle| q.contains(needle))
 }
 
+fn is_decision_question(question: &str) -> bool {
+    let q = question.to_lowercase();
+    [
+        "why",
+        "为什么",
+        "原因",
+        "设计",
+        "决策",
+        "tradeoff",
+        "权衡",
+        "rationale",
+        "architecture",
+        "架构",
+        "handoff",
+        "onboarding",
+        "演进",
+        "history",
+        "blame",
+        "trace",
+    ]
+    .iter()
+    .any(|needle| q.contains(needle))
+}
+
+fn node_priority(kind: &NodeKind, decision_query: bool, trace_query: bool) -> usize {
+    match (trace_query, decision_query, kind) {
+        (true, _, NodeKind::Decision) => 0,
+        (true, _, NodeKind::Commit) => 1,
+        (true, _, NodeKind::Concept) => 2,
+        (true, _, NodeKind::File) => 3,
+        (true, _, _) => 4,
+        (false, true, NodeKind::Decision) => 0,
+        (false, true, NodeKind::Concept) => 1,
+        (false, true, NodeKind::File) => 2,
+        (false, true, NodeKind::Function) => 3,
+        (false, true, NodeKind::Module) => 3,
+        (false, true, _) => 4,
+        (false, false, NodeKind::File) => 0,
+        (false, false, NodeKind::Module) => 1,
+        (false, false, NodeKind::Function) => 2,
+        (false, false, NodeKind::Decision) => 3,
+        (false, false, NodeKind::Concept) => 4,
+        (false, false, _) => 5,
+    }
+}
+
+fn default_context_ids(
+    graph: &KnowledgeGraph,
+    decision_query: bool,
+    trace_query: bool,
+) -> HashSet<Uuid> {
+    let mut ids = HashSet::new();
+    let mut ranked = graph.nodes.iter().collect::<Vec<_>>();
+    ranked.sort_by_key(|node| node_priority(&node.kind, decision_query, trace_query));
+
+    for node in ranked.into_iter().take(if trace_query { 18 } else { 20 }) {
+        ids.insert(node.id);
+    }
+
+    graph.expand_ids_with_neighbors(&ids, 1)
+}
+
+fn build_ranked_context_ids(
+    question: &str,
+    graph: &KnowledgeGraph,
+    hits: Vec<(Uuid, f32)>,
+) -> HashSet<Uuid> {
+    let trace_query = is_trace_question(question);
+    let decision_query = is_decision_question(question);
+    let mut ranked = hits
+        .into_iter()
+        .filter_map(|(id, score)| {
+            graph.node_by_id(id).map(|node| {
+                (
+                    id,
+                    node_priority(&node.kind, decision_query, trace_query),
+                    score,
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+
+    ranked.sort_by(|left, right| {
+        left.1.cmp(&right.1).then_with(|| {
+            right
+                .2
+                .partial_cmp(&left.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    });
+
+    let mut ids = HashSet::new();
+    for (id, _, _) in ranked.into_iter().take(if trace_query { 18 } else { 20 }) {
+        ids.insert(id);
+    }
+
+    graph.expand_ids_with_neighbors(&ids, if trace_query { 2 } else { 1 })
+}
+
+fn render_graph_context(
+    graph: &KnowledgeGraph,
+    ids: &HashSet<Uuid>,
+    decision_query: bool,
+    trace_query: bool,
+) -> String {
+    let mut sections = Vec::new();
+
+    let decisions = graph
+        .nodes
+        .iter()
+        .filter(|node| ids.contains(&node.id) && node.kind == NodeKind::Decision)
+        .map(|node| {
+            format!(
+                "- {}: {}",
+                node.name,
+                node.description.as_deref().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>();
+    if !decisions.is_empty() {
+        sections.push(format!("## Prior Decisions\n{}", decisions.join("\n")));
+    }
+
+    let concepts = graph
+        .nodes
+        .iter()
+        .filter(|node| ids.contains(&node.id) && node.kind == NodeKind::Concept)
+        .map(|node| {
+            format!(
+                "- {}: {}",
+                node.name,
+                node.description.as_deref().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>();
+    if decision_query && !concepts.is_empty() {
+        sections.push(format!("## Relevant Concepts\n{}", concepts.join("\n")));
+    }
+
+    if trace_query {
+        let commits = graph
+            .nodes
+            .iter()
+            .filter(|node| ids.contains(&node.id) && node.kind == NodeKind::Commit)
+            .map(|node| {
+                format!(
+                    "- {}: {}",
+                    node.name,
+                    node.description.as_deref().unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>();
+        if !commits.is_empty() {
+            sections.push(format!("## Relevant Commits\n{}", commits.join("\n")));
+        }
+    }
+
+    sections.push(format!(
+        "## Graph Context\n{}",
+        graph.to_context_str_filtered(ids)
+    ));
+
+    sections.join("\n\n")
+}
+
 async fn build_graph_context(
     question: &str,
     q_vec: &Option<Vec<f32>>,
@@ -699,84 +1030,24 @@ async fn build_graph_context(
     vector_index: &VectorIndex,
     has_embeddings: bool,
 ) -> String {
-    if has_embeddings {
+    let trace_query = is_trace_question(question);
+    let decision_query = is_decision_question(question);
+
+    let ids = if has_embeddings {
         if let Some(vector) = q_vec {
-            if let Ok(hits) = vector_index.search(vector, 30).await {
-                let trace_query = is_trace_question(question);
-                let mut ranked_ids: Vec<Uuid> = if trace_query {
-                    let mut preferred: Vec<Uuid> = hits
-                        .iter()
-                        .filter_map(|(id, _)| {
-                            graph
-                                .nodes
-                                .iter()
-                                .find(|node| {
-                                    node.id == *id
-                                        && matches!(
-                                            node.kind,
-                                            NodeKind::Decision | NodeKind::Commit
-                                        )
-                                })
-                                .map(|node| node.id)
-                        })
-                        .collect();
-                    let mut fallback: Vec<Uuid> = hits
-                        .iter()
-                        .filter_map(|(id, _)| {
-                            graph
-                                .nodes
-                                .iter()
-                                .find(|node| {
-                                    node.id == *id
-                                        && !matches!(
-                                            node.kind,
-                                            NodeKind::Decision | NodeKind::Commit
-                                        )
-                                })
-                                .map(|node| node.id)
-                        })
-                        .collect();
-                    preferred.append(&mut fallback);
-                    preferred
-                } else {
-                    hits.into_iter().map(|(id, _)| id).collect()
-                };
-
-                ranked_ids.truncate(if trace_query { 18 } else { 20 });
-                let mut ids: HashSet<Uuid> = ranked_ids.into_iter().collect();
-                for id in ids.clone() {
-                    for (_, neighbor) in graph.neighbors(id) {
-                        ids.insert(neighbor.id);
-                    }
-                }
-                let mut context = graph.to_context_str_filtered(&ids);
-                if trace_query {
-                    let decisions = graph
-                        .nodes
-                        .iter()
-                        .filter(|node| ids.contains(&node.id) && node.kind == NodeKind::Decision)
-                        .map(|node| {
-                            format!(
-                                "- {}: {}",
-                                node.name,
-                                node.description.as_deref().unwrap_or("")
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    if !decisions.is_empty() {
-                        context = format!(
-                            "## Prior Decisions\n{}\n\n{}",
-                            decisions.join("\n"),
-                            context
-                        );
-                    }
-                }
-                return context;
+            if let Ok(hits) = vector_index.search(vector, 40).await {
+                build_ranked_context_ids(question, graph, hits)
+            } else {
+                default_context_ids(graph, decision_query, trace_query)
             }
+        } else {
+            default_context_ids(graph, decision_query, trace_query)
         }
-    }
+    } else {
+        default_context_ids(graph, decision_query, trace_query)
+    };
 
-    graph.to_context_str(None)
+    render_graph_context(graph, &ids, decision_query, trace_query)
 }
 
 async fn build_memory_context(q_vec: &Option<Vec<f32>>, store: &MemoryStore) -> String {
@@ -792,24 +1063,6 @@ async fn build_memory_context(q_vec: &Option<Vec<f32>>, store: &MemoryStore) -> 
         memories
             .iter()
             .map(|memory| format!("- {}", memory.content))
-            .collect::<Vec<_>>()
-            .join("\n")
-    )
-}
-
-async fn build_kb_context(q_vec: &Option<Vec<f32>>, store: &KnowledgeStore) -> String {
-    let items = store
-        .search_external(q_vec.as_deref(), None, 3)
-        .await
-        .unwrap_or_default();
-    if items.is_empty() {
-        return String::new();
-    }
-    format!(
-        "\n## Knowledge base\n{}",
-        items
-            .iter()
-            .map(|item| format!("---\n{}", &item.content[..item.content.len().min(800)]))
             .collect::<Vec<_>>()
             .join("\n")
     )
@@ -845,10 +1098,23 @@ async fn auto_extract_knowledge(
             return;
         }
 
+        let node_kind = if is_decision_question(question) {
+            NodeKind::Decision
+        } else {
+            NodeKind::Concept
+        };
         let concept = Node {
             id: Uuid::new_v4(),
-            kind: NodeKind::Concept,
-            name: format!("Insight: {}", question.chars().take(80).collect::<String>()),
+            kind: node_kind.clone(),
+            name: format!(
+                "{}: {}",
+                if node_kind == NodeKind::Decision {
+                    "Decision"
+                } else {
+                    "Insight"
+                },
+                question.chars().take(80).collect::<String>()
+            ),
             file_path: None,
             description: Some(text.clone()),
             raw_source: Some(format!("Q: {}\nA: {}", question, answer)),
@@ -923,9 +1189,6 @@ async fn ask_local(
     let memory_store = MemoryStore::new(&memory_db_path(project_path))
         .await
         .map_err(|e| e.to_string())?;
-    let knowledge_store = KnowledgeStore::new(&knowledge_db_path(project_path))
-        .await
-        .map_err(|e| e.to_string())?;
     let vector_index = VectorIndex::new(store.pool.clone())
         .await
         .map_err(|e| e.to_string())?;
@@ -935,11 +1198,11 @@ async fn ask_local(
     let graph_ctx =
         build_graph_context(question, &q_vec, &graph, &vector_index, has_embeddings).await;
     let memory_ctx = build_memory_context(&q_vec, &memory_store).await;
-    let kb_ctx = build_kb_context(&q_vec, &knowledge_store).await;
     let system = format!(
         "你是一个代码库理解助手。默认使用简体中文回答，除非用户明确要求其他语言。\n\
-         回答要准确、直接，并优先基于图谱事实、决策节点和上下文作答。\n\n## Knowledge Graph\n{}{}{}\n\n请给出清晰回答。",
-        graph_ctx, memory_ctx, kb_ctx
+         回答要准确、直接，并把知识图谱视为项目事实主存。\n\
+         Session memory 只用于保留对话上下文，不应覆盖图谱事实。\n\n## Knowledge Graph\n{}{}\n\n请给出清晰回答。",
+        graph_ctx, memory_ctx
     );
 
     let response = llm
@@ -1084,6 +1347,221 @@ async fn eval_local(project_path: &Path, provider: Option<&str>) -> Result<EvalD
     })
 }
 
+fn extract_commit_hashes(detail: &str) -> Vec<String> {
+    let mut hashes = Vec::new();
+    let mut current = String::new();
+
+    for ch in detail.chars() {
+        if ch.is_ascii_hexdigit() {
+            current.push(ch);
+        } else {
+            if (7..=40).contains(&current.len()) {
+                hashes.push(current.clone());
+            }
+            current.clear();
+        }
+    }
+
+    if (7..=40).contains(&current.len()) {
+        hashes.push(current);
+    }
+
+    hashes
+}
+
+fn extract_changed_files_from_diff(diff: &str) -> Vec<String> {
+    let mut files = diff
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("+++ b/")
+                .or_else(|| line.strip_prefix("--- a/"))
+        })
+        .filter(|line| *line != "/dev/null")
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
+    files.sort();
+    files.dedup();
+    files
+}
+
+fn is_symbol_like_kind(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Function | NodeKind::Struct | NodeKind::Enum | NodeKind::Trait | NodeKind::Module
+    )
+}
+
+fn collect_anchor_scope_ids(graph: &KnowledgeGraph, anchor_ids: &[Uuid]) -> HashSet<Uuid> {
+    let seeds = anchor_ids.iter().copied().collect::<HashSet<_>>();
+    graph.expand_ids_with_neighbors(&seeds, 2)
+}
+
+fn match_file_or_symbol_ids(
+    graph: &KnowledgeGraph,
+    detail: &str,
+    anchor_scope_ids: &HashSet<Uuid>,
+) -> Vec<Uuid> {
+    let detail_lower = detail.to_lowercase();
+    graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            if !anchor_scope_ids.is_empty() && !anchor_scope_ids.contains(&node.id) {
+                return false;
+            }
+            if node.kind == NodeKind::File {
+                return detail_lower.contains(&node.name.to_lowercase())
+                    || node
+                        .file_path
+                        .as_deref()
+                        .map(|path| detail_lower.contains(&path.to_lowercase()))
+                        .unwrap_or(false);
+            }
+            is_symbol_like_kind(&node.kind) && detail_lower.contains(&node.name.to_lowercase())
+        })
+        .map(|node| node.id)
+        .collect()
+}
+
+async fn persist_trace_decision(
+    store: &GraphStore,
+    vector_index: &VectorIndex,
+    llm: &dyn LlmClient,
+    graph: &KnowledgeGraph,
+    anchor_ids: &[Uuid],
+    title: &str,
+    report: &TraceReport,
+) -> Result<Uuid, String> {
+    let decision = Node {
+        id: Uuid::new_v4(),
+        kind: NodeKind::Decision,
+        name: title.to_string(),
+        file_path: None,
+        description: Some(report.summary.clone()),
+        raw_source: Some(serde_json::to_string_pretty(report).map_err(|e| e.to_string())?),
+        created_at: Utc::now(),
+    };
+    store
+        .save_node(&decision)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Ok(vector) = llm.embed(&format!("{}\n{}", title, report.summary)).await {
+        let _ = vector_index.upsert(decision.id, &vector).await;
+    }
+
+    for anchor_id in anchor_ids {
+        if graph.nodes.iter().any(|node| node.id == *anchor_id) {
+            let edge = Edge {
+                id: Uuid::new_v4(),
+                from: *anchor_id,
+                to: decision.id,
+                kind: EdgeKind::ExplainedBy,
+                label: Some("trace report".to_string()),
+            };
+            store.save_edge(&edge).await.map_err(|e| e.to_string())?;
+        }
+    }
+
+    persist_trace_evidence_edges(store, graph, decision.id, anchor_ids, report).await?;
+    Ok(decision.id)
+}
+
+async fn persist_trace_evidence_edges(
+    store: &GraphStore,
+    graph: &KnowledgeGraph,
+    decision_id: Uuid,
+    anchor_ids: &[Uuid],
+    report: &TraceReport,
+) -> Result<(), String> {
+    let anchor_scope_ids = collect_anchor_scope_ids(graph, anchor_ids);
+    for evidence in &report.evidence {
+        let source = evidence.source.to_lowercase();
+        let mut matched_ids: Vec<Uuid> = Vec::new();
+        let mut edge_kind: Option<EdgeKind> = None;
+
+        if source.contains("commit") || source.contains("blame") || source.contains("diff") {
+            edge_kind = Some(EdgeKind::EvidenceFromCommit);
+            for hash in extract_commit_hashes(&evidence.detail) {
+                matched_ids.extend(
+                    graph
+                        .nodes
+                        .iter()
+                        .filter(|node| {
+                            node.kind == NodeKind::Commit
+                                && (node.name == hash || node.name.starts_with(&hash))
+                        })
+                        .map(|node| node.id),
+                );
+            }
+        }
+
+        if source.contains("code") || source.contains("file") {
+            edge_kind.get_or_insert(EdgeKind::EvidenceFromFile);
+            matched_ids.extend(anchor_ids.iter().copied());
+            matched_ids.extend(match_file_or_symbol_ids(
+                graph,
+                &evidence.detail,
+                &anchor_scope_ids,
+            ));
+        }
+
+        if source.contains("diff") {
+            edge_kind.get_or_insert(EdgeKind::EvidenceFromFile);
+            for changed in extract_changed_files_from_diff(&evidence.detail) {
+                matched_ids.extend(
+                    graph
+                        .nodes
+                        .iter()
+                        .filter(|node| {
+                            node.kind == NodeKind::File
+                                && (node.name == changed
+                                    || node.file_path.as_deref() == Some(changed.as_str()))
+                        })
+                        .map(|node| node.id),
+                );
+            }
+        }
+
+        if source.contains("decision") || source.contains("concept") {
+            edge_kind.get_or_insert(if source.contains("decision") {
+                EdgeKind::EvidenceFromDecision
+            } else {
+                EdgeKind::EvidenceFromConcept
+            });
+            matched_ids.extend(
+                graph
+                    .nodes
+                    .iter()
+                    .filter(|node| matches!(node.kind, NodeKind::Concept | NodeKind::Decision))
+                    .filter(|node| {
+                        let name = node.name.to_lowercase();
+                        let desc = node.description.as_deref().unwrap_or("").to_lowercase();
+                        let detail = evidence.detail.to_lowercase();
+                        detail.contains(&name) || (!desc.is_empty() && detail.contains(&desc))
+                    })
+                    .map(|node| node.id),
+            );
+        }
+
+        matched_ids.sort_unstable();
+        matched_ids.dedup();
+
+        for matched_id in matched_ids {
+            let edge = Edge {
+                id: Uuid::new_v4(),
+                from: decision_id,
+                to: matched_id,
+                kind: edge_kind.clone().unwrap_or(EdgeKind::RelatedTo),
+                label: Some(format!("trace evidence: {}", evidence.source)),
+            };
+            store.save_edge(&edge).await.map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn get_default_project_path() -> Result<String, String> {
     Ok(default_project_path())
@@ -1092,9 +1570,58 @@ pub async fn get_default_project_path() -> Result<String, String> {
 #[tauri::command]
 pub async fn pick_project_directory(app: AppHandle) -> Result<Option<String>, String> {
     let selected = app.dialog().file().blocking_pick_folder();
-    Ok(selected
+    let normalized = selected
         .and_then(|path| path.into_path().ok())
-        .map(normalize_project_path))
+        .map(normalize_project_path);
+    if let Some(path) = normalized.as_deref() {
+        remember_active_project(Path::new(path), None)?;
+    }
+    Ok(normalized)
+}
+
+#[tauri::command]
+pub async fn import_github_project(url: String) -> Result<ImportedProjectData, String> {
+    let (clone_url, owner, repo) = parse_github_project_url(&url)?;
+    let clone_root = github_import_root();
+    std::fs::create_dir_all(&clone_root).map_err(|e| e.to_string())?;
+
+    let folder_name = format!("{owner}-{repo}");
+    let (destination, reused_existing) = choose_clone_destination(&clone_root, &folder_name);
+
+    if !reused_existing {
+        let destination_text = destination.to_string_lossy().to_string();
+        let output = std::process::Command::new("git")
+            .args(["clone", &clone_url, &destination_text])
+            .output()
+            .map_err(|e| format!("执行 git clone 失败：{e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            return Err(if !stderr.is_empty() {
+                format!("GitHub 导入失败：{stderr}")
+            } else if !stdout.is_empty() {
+                format!("GitHub 导入失败：{stdout}")
+            } else {
+                "GitHub 导入失败：git clone 未成功完成。".to_string()
+            });
+        }
+    }
+
+    remember_active_project(&destination, Some(&folder_name))?;
+    let normalized_path = normalize_project_path(&destination);
+    let message = if reused_existing {
+        format!("已复用本地仓库：{}", normalized_path)
+    } else {
+        format!("已克隆到本地：{}", normalized_path)
+    };
+
+    Ok(ImportedProjectData {
+        url: clone_url,
+        project_name: folder_name,
+        project_path: normalized_path,
+        reused_existing,
+        message,
+    })
 }
 
 #[tauri::command]
@@ -1142,6 +1669,12 @@ pub async fn list_provider_models(
 pub async fn index_project(project_path: String) -> Result<String, String> {
     let project_path = resolve_project_path(&project_path);
     let (files, lines, nodes, edges) = build_graph_local(&project_path).await?;
+    if nodes == 0 {
+        return Err(format!(
+            "Indexed '{}' but found 0 graph nodes. Check that this is the repository root and that it contains supported code files before generating docs.",
+            project_path.display()
+        ));
+    }
     Ok(format!(
         "{} files, {} lines, {} nodes, {} edges",
         files, lines, nodes, edges
@@ -1152,6 +1685,192 @@ pub async fn index_project(project_path: String) -> Result<String, String> {
 pub async fn ask(project_path: String, question: String) -> Result<String, String> {
     let project_path = resolve_project_path(&project_path);
     ask_local(&project_path, &question, None).await
+}
+
+#[tauri::command]
+pub async fn explain_target(project_path: String, target: String) -> Result<String, String> {
+    let project_path = resolve_project_path(&project_path);
+    let cfg = BsConfig::load(&project_path).unwrap_or_default();
+    let llm = require_llm(&cfg, None)?;
+    let store = GraphStore::new(&graph_db_path(&project_path))
+        .await
+        .map_err(|e| e.to_string())?;
+    let graph = store.load_graph().await.map_err(|e| e.to_string())?;
+    let vector_index = VectorIndex::new(store.pool.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if std::path::Path::new(&target).exists() {
+        let src = std::fs::read_to_string(&target).map_err(|e| e.to_string())?;
+        let llm: std::sync::Arc<dyn LlmClient> = std::sync::Arc::from(llm);
+        let trace = TraceAgent::new(llm.clone());
+        let report = trace
+            .explain_file(&project_path, &target, &src)
+            .await
+            .map_err(|e| e.to_string())?;
+        let anchor_ids = graph
+            .nodes_in_file(&target)
+            .into_iter()
+            .map(|node| node.id)
+            .collect::<Vec<_>>();
+        let _ = persist_trace_decision(
+            &store,
+            &vector_index,
+            &*llm,
+            &graph,
+            &anchor_ids,
+            &format!("Decision: {}", target),
+            &report,
+        )
+        .await;
+        return Ok(report.to_markdown(&format!("Trace Report: {}", target)));
+    }
+
+    let node = graph.find_node_by_name(&target).ok_or_else(|| {
+        format!(
+            "'{}' not found as file or indexed symbol. Run `loci index --path {}` first.",
+            target,
+            project_path.display()
+        )
+    })?;
+
+    let neighbors = graph.neighbors(node.id);
+    let prompt = format!(
+        "Explain this symbol to a developer who is new to the codebase.\n\
+         Cover: what it does, why it likely exists, and what related nodes matter.\n\
+         Output Markdown.\n\n\
+         Symbol: {} ({:?})\nFile: {}\nRelated: {}\nDescription: {}",
+        node.name,
+        node.kind,
+        node.file_path.as_deref().unwrap_or("unknown"),
+        neighbors
+            .iter()
+            .map(|(_, n)| n.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        node.description.as_deref().unwrap_or("")
+    );
+
+    let response = llm
+        .chat(
+            vec![Message {
+                role: Role::User,
+                content: prompt,
+            }],
+            None,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let answer = match response {
+        loci_llm::LlmResponse::Text(text) => text,
+        _ => String::new(),
+    };
+
+    if let Some(file_path) = node.file_path.as_deref() {
+        if let Ok(src) = std::fs::read_to_string(file_path) {
+            let llm: std::sync::Arc<dyn LlmClient> = std::sync::Arc::from(llm);
+            let trace = TraceAgent::new(llm.clone());
+            if let Ok(report) = trace.explain_file(&project_path, file_path, &src).await {
+                let mut anchor_ids = vec![node.id];
+                if let Some(file_node) = graph.find_file_node(file_path) {
+                    anchor_ids.push(file_node.id);
+                }
+                let _ = persist_trace_decision(
+                    &store,
+                    &vector_index,
+                    &*llm,
+                    &graph,
+                    &anchor_ids,
+                    &format!("Decision: {}", target),
+                    &report,
+                )
+                .await;
+            }
+        }
+    }
+
+    Ok(answer)
+}
+
+#[tauri::command]
+pub async fn analyze_recent_diff(
+    project_path: String,
+    commit: Option<String>,
+) -> Result<String, String> {
+    let project_path = resolve_project_path(&project_path);
+    let commit = commit.unwrap_or_else(|| "HEAD".to_string());
+    let cfg = BsConfig::load(&project_path).unwrap_or_default();
+    let llm = require_llm(&cfg, None)?;
+
+    let diff_output = if commit == "HEAD" {
+        std::process::Command::new("git")
+            .args(["diff", "HEAD"])
+            .current_dir(&project_path)
+            .output()
+            .map_err(|e| e.to_string())?
+    } else {
+        std::process::Command::new("git")
+            .args(["diff", &format!("{}^", commit), &commit])
+            .current_dir(&project_path)
+            .output()
+            .map_err(|e| e.to_string())?
+    };
+
+    let diff = String::from_utf8_lossy(&diff_output.stdout).to_string();
+    if diff.trim().is_empty() {
+        return Ok(format!("No changes found for '{}'.", commit));
+    }
+
+    let llm: std::sync::Arc<dyn LlmClient> = std::sync::Arc::from(llm);
+    let trace = TraceAgent::new(llm.clone());
+    let report = trace
+        .analyze_diff(&commit, &diff)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let store = GraphStore::new(&graph_db_path(&project_path))
+        .await
+        .map_err(|e| e.to_string())?;
+    let graph = store.load_graph().await.map_err(|e| e.to_string())?;
+    let vector_index = VectorIndex::new(store.pool.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut anchor_ids = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.kind == NodeKind::Commit && (node.name == commit || node.name.starts_with(&commit))
+        })
+        .map(|node| node.id)
+        .collect::<Vec<_>>();
+    let changed_files = extract_changed_files_from_diff(&diff);
+    anchor_ids.extend(
+        graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.kind == NodeKind::File
+                    && changed_files.iter().any(|changed| {
+                        node.name == *changed || node.file_path.as_deref() == Some(changed.as_str())
+                    })
+            })
+            .map(|node| node.id),
+    );
+    anchor_ids.sort_unstable();
+    anchor_ids.dedup();
+
+    let _ = persist_trace_decision(
+        &store,
+        &vector_index,
+        &*llm,
+        &graph,
+        &anchor_ids,
+        &format!("Decision: diff {}", commit),
+        &report,
+    )
+    .await;
+
+    Ok(report.to_markdown(&format!("Trace Report: diff {}", commit)))
 }
 
 #[tauri::command]
@@ -1211,21 +1930,17 @@ pub async fn get_trace(project_path: String, target: String) -> Result<TraceData
             decision_ids.insert(node.id);
         }
     } else {
-        for edge in &graph.edges {
-            if edge.kind == EdgeKind::ExplainedBy {
-                if anchor_ids.contains(&edge.from) {
-                    decision_ids.insert(edge.to);
+        let trace_scope = graph.expand_ids_with_neighbors(&anchor_ids, 2);
+        for node in &graph.nodes {
+            if trace_scope.contains(&node.id) {
+                if node.kind == NodeKind::Decision {
+                    decision_ids.insert(node.id);
                 }
-                if anchor_ids.contains(&edge.to) {
-                    decision_ids.insert(edge.from);
+                if node.kind == NodeKind::Commit {
+                    commit_ids.insert(node.id);
                 }
-            }
-            if edge.kind == EdgeKind::ChangedIn {
-                if anchor_ids.contains(&edge.from) {
-                    commit_ids.insert(edge.to);
-                }
-                if anchor_ids.contains(&edge.to) {
-                    commit_ids.insert(edge.from);
+                if !anchor_ids.contains(&node.id) {
+                    related_ids.insert(node.id);
                 }
             }
         }
@@ -1301,7 +2016,10 @@ pub async fn get_doc(
         .map_err(|e| e.to_string())?;
     let graph = store.load_graph().await.map_err(|e| e.to_string())?;
     if graph.nodes.is_empty() {
-        return Err("No index. Run `loci index` first.".to_string());
+        return Err(format!(
+            "No index found for '{}'. Re-run indexing for this exact project path and make sure the index result contains non-zero nodes.",
+            project_path.display()
+        ));
     }
 
     let prompt = build_doc_prompt(&graph, &kind);
@@ -1339,4 +2057,40 @@ pub async fn get_memories(project_path: String) -> Result<Vec<String>, String> {
         .await
         .map_err(|e| e.to_string())?;
     Ok(memories.into_iter().map(|memory| memory.content).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_https_github_url() {
+        let (clone_url, owner, repo) =
+            parse_github_project_url("https://github.com/openai/openai-cookbook").unwrap();
+        assert_eq!(clone_url, "https://github.com/openai/openai-cookbook.git");
+        assert_eq!(owner, "openai");
+        assert_eq!(repo, "openai-cookbook");
+    }
+
+    #[test]
+    fn parses_ssh_github_url() {
+        let (clone_url, owner, repo) =
+            parse_github_project_url("git@github.com:owner/repo.git").unwrap();
+        assert_eq!(clone_url, "git@github.com:owner/repo.git");
+        assert_eq!(owner, "owner");
+        assert_eq!(repo, "repo");
+    }
+
+    #[test]
+    fn chooses_suffix_when_plain_directory_exists() {
+        let root = std::env::temp_dir().join(format!("loci-clone-test-{}", Uuid::new_v4()));
+        let existing = root.join("demo-repo");
+        std::fs::create_dir_all(&existing).unwrap();
+
+        let (candidate, reused_existing) = choose_clone_destination(&root, "demo-repo");
+        assert_eq!(candidate, root.join("demo-repo-2"));
+        assert!(!reused_existing);
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

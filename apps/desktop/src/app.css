@@ -105,12 +105,9 @@ textarea {
   width: 46px;
   height: 46px;
   border-radius: 14px;
-  display: grid;
-  place-items: center;
-  font-size: 20px;
-  font-weight: 700;
-  color: #0f2744;
-  background: linear-gradient(135deg, #dcecff 0%, #8ec5ff 100%);
+  display: block;
+  object-fit: cover;
+  box-shadow: 0 10px 22px rgba(19, 32, 51, 0.14);
 }
 
 .brand-block h1,
@@ -228,19 +225,49 @@ textarea {
   gap: 14px;
 }
 
-.tool-nav {
+.project-source-buttons,
+.github-import-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.project-source-buttons {
+  flex-shrink: 0;
+}
+
+.github-import-panel {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid #d9e3ef;
+  background: linear-gradient(180deg, #f9fbff 0%, #f2f7ff 100%);
+}
+
+.github-import-hint {
+  justify-content: space-between;
+  font-size: 0.82rem;
+  color: #5e738b;
+  overflow-wrap: anywhere;
+}
+
+.tool-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .tool-button {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
+  gap: 8px;
   text-align: left;
   color: #132033;
+  padding: 14px 16px 15px;
+  line-height: 1.45;
 }
 
 .tool-button span,
@@ -256,12 +283,18 @@ textarea {
 
 .tool-button span {
   font-weight: 600;
+  font-size: 0.96rem;
 }
 
 .tool-button small,
 .message-meta,
 .metric-card span {
   color: #6b7f95;
+}
+
+.tool-button small {
+  display: block;
+  line-height: 1.55;
 }
 
 .tool-button.active {
@@ -271,6 +304,7 @@ textarea {
 
 .primary-button,
 .secondary-button,
+.icon-button,
 .ghost-button,
 .suggestion-chip,
 .provider-summary-chip,
@@ -282,6 +316,7 @@ textarea {
 
 .primary-button:hover,
 .secondary-button:hover,
+.icon-button:hover,
 .ghost-button:hover,
 .suggestion-chip:hover,
 .tool-button:hover,
@@ -291,6 +326,7 @@ textarea {
 
 .primary-button:disabled,
 .secondary-button:disabled,
+.icon-button:disabled,
 .ghost-button:disabled,
 .suggestion-chip:disabled,
 .tool-button:disabled,
@@ -302,6 +338,7 @@ textarea {
 
 .primary-button,
 .secondary-button,
+.icon-button,
 .ghost-button,
 .settings-launcher {
   border: 0;
@@ -318,6 +355,29 @@ textarea {
   color: #16314f;
   background: #edf3fb;
   border: 1px solid #d5e0ee;
+}
+
+.icon-button {
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #16314f;
+  background: #edf3fb;
+  border: 1px solid #d5e0ee;
+}
+
+.icon-button.active {
+  color: #fff;
+  background: linear-gradient(135deg, #24292f 0%, #0f1419 100%);
+  border-color: #24292f;
+}
+
+.icon-button svg {
+  width: 18px;
+  height: 18px;
 }
 
 .ghost-button,
@@ -339,6 +399,14 @@ textarea {
   margin-top: 8px;
 }
 
+@media (max-width: 960px) {
+  .project-source-buttons,
+  .github-import-hint {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .workspace {
   min-width: 0;
   min-height: 100vh;
@@ -354,6 +422,7 @@ textarea {
 .toolbar-actions,
 .settings-card-header,
 .settings-drawer-header,
+.settings-dirty-banner,
 .settings-drawer-toolbar,
 .result-header,
 .header-actions {
@@ -745,6 +814,31 @@ textarea {
   border: 1px solid #d9e6f3;
 }
 
+.settings-dirty-banner {
+  align-items: center;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid #f0d39d;
+  background: linear-gradient(180deg, #fffaf0 0%, #fff5e3 100%);
+}
+
+.settings-dirty-banner > div {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-dirty-banner strong {
+  color: #7d4f0d;
+}
+
+.settings-dirty-banner span {
+  color: #775c33;
+  line-height: 1.6;
+}
+
 .result-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -892,6 +986,7 @@ textarea {
   .toolbar-actions,
   .settings-card-header,
   .settings-drawer-header,
+  .settings-dirty-banner,
   .settings-drawer-toolbar,
   .result-header {
     flex-direction: column;

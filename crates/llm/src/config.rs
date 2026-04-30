@@ -146,7 +146,17 @@ fn resolve_api_key(p: &ProviderConfig) -> Result<String> {
 }
 
 fn dirs_path() -> Option<std::path::PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .map(|h| std::path::PathBuf::from(h).join(".config/bs"))
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return Some(std::path::PathBuf::from(appdata).join("bs"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return Some(std::path::PathBuf::from(home).join(".config/bs"));
+    }
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        return Some(std::path::PathBuf::from(user_profile).join(".config/bs"));
+    }
+    match (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
+        (Ok(drive), Ok(path)) => Some(std::path::PathBuf::from(format!("{drive}{path}")).join(".config/bs")),
+        _ => None,
+    }
 }

@@ -40,8 +40,8 @@
 
 ### P0 — 收紧主链路
 
-- [ ] **统一项目认知层**
-  - 定义 graph 为唯一项目事实主存
+- [x] **统一项目认知层**
+  - [x] 定义 graph 为唯一项目事实主存（ask / doc / eval 默认优先消费 graph）
   - [x] memory 已开始只承担会话上下文
   - [x] knowledge 已开始收敛为外部材料层
   - [x] knowledge / external material 到 graph 的最小沉淀链已接入
@@ -64,11 +64,11 @@
   - `explain` / `diff` 已复用统一 trace report
   - graph 已支持 `commit` / `decision` 节点与 trace 写回
 
-- [ ] **Trace 深化**
+- [x] **Trace 深化（最小可用）**
   - [x] 已补稳定时间线骨架与归并
-  - commit 聚类与更稳定的时间线重建
-  - file / symbol / commit / decision 的细粒度证据关联
-  - 输出证据、结论、置信度的稳定评测
+  - [ ] commit 聚类与更稳定的时间线重建
+  - [x] file / symbol / commit / decision 的细粒度证据关联
+  - [ ] 输出证据、结论、置信度的稳定评测
 
 - [x] **跨文件调用关系**
   - AST 解析时提取函数调用关系
@@ -80,8 +80,8 @@
   - 已支持 `concept` / `decision` 节点写入
   - 已建立基础证据边和来源追踪
 
-- [ ] **Decision 优先检索与消费**
-  - `ask` 的 trace 类问题优先召回 `decision`
+- [x] **Decision 优先检索与消费**
+  - [x] `ask` 的 trace 类问题优先召回 `decision`
   - [x] 增加显式 `trace` 入口，直接查看决策链/证据链
   - [x] `doc_generate` 已开始优先消费 `decision` / `concept`
 
@@ -98,18 +98,18 @@
 
 - [x] **Tauri 桌面 UI** — Chat / Graph / Memory 三个 Tab，调用 Tauri commands
 - [x] **VS Code 插件** — Ask / Explain / Diff / Index 四个命令，右键菜单集成
-- [ ] **UI 与当前主链路对齐**
-  - [ ] Tauri / server 暴露 `trace` / `doc` / `eval` / `explain` / `diff` 最小接口
+- [x] **UI 与当前主链路对齐**
+  - [x] Tauri / server 暴露 `trace` / `doc` / `eval` / `explain` / `diff` 最小接口
   - [x] 已补 Tauri `trace` command 和 server `/trace` 端点
   - [x] 已补 Tauri `doc` command 和 server `/doc` 端点
   - [x] 已补 Tauri `eval` command 和 server `/eval` 端点
   - [x] 已补 server `/explain` 和 `/diff` 端点，供外部 UI 走专用入口
-  - [ ] 桌面端增加 `Trace` / `Docs` / `Eval` 视图，并提升 `Decision` / `Commit` / evidence 的可见性
+  - [x] 桌面端增加 `Trace` / `Docs` / `Eval` 视图，并提升 `Decision` / `Commit` / evidence 的可见性
   - [x] 桌面端已补最小 `Trace` 视图，开始展示 `Decision` / `Commit` / evidence
   - [x] 桌面端已补最小 `Docs` 视图，开始消费 graph 中的 `Decision` / `Concept`
   - [x] 桌面端已补最小 `Eval` 视图，开始展示评分、理由和 drift check
   - [x] VS Code 插件已改走 `/explain` / `/diff` 专用入口
-  - [ ] UI 和命令文案统一到 `loci`，清理旧的 `sage` 和旧命令文案残留
+  - [x] UI 和命令文案统一到 `loci`，清理旧的 `sage` 和旧命令文案残留
   - [x] 桌面端已开始切到 `loci` 命名
   - [x] VS Code 插件已开始切到 `loci` 命名和配置前缀
 
@@ -145,8 +145,8 @@
 - [x] 知识图谱重建时未清理旧节点（已修复：`store.clear()` on re-index）
 - [x] 问答后的知识沉淀已开始回写图谱（`concept` / `decision`）
 - [ ] 向量索引在节点数 >10 万时性能未验证
-- [ ] `loci knowledge watch` 使用了 `block_in_place`，在单线程 runtime 下会 panic
-- [ ] 缺少单元测试和集成测试
+- [x] `loci knowledge watch` 使用了 `block_in_place`，在单线程 runtime 下会 panic
+- [x] 已补最小主链路单元测试（CLI / graph / server）；更完整集成测试仍待扩展
 
 ---
 
@@ -158,12 +158,13 @@
    - [x] 已提供最小 `loci eval` 入口
    - [x] 已补基础评分标准与结果落盘
    - [x] 已补评测样本文件和最小结果对比
+   - [x] 已补主链路关键测试：decision 优先检索、diff 文件提取、trace evidence 关联
 2. UI 对齐当前产品能力
    - [x] 已补桌面端 `trace` 可视化和 Tauri/server trace 接口
    - [x] 已补 `doc` 入口
    - [x] 已补 `eval` 入口
    - [x] 已补 server / VS Code 插件 的专用 explain/diff 入口
-   - [ ] 继续清理零散旧命令和品牌文案残留（`.bs` 存储路径暂保持兼容）
+   - [x] 继续清理零散旧命令和品牌文案残留（`.bs` 存储路径暂保持兼容）
 3. API 契约完善
    - [x] 已补更完整的 OpenAPI schema
    - [x] 已统一错误状态码与错误映射

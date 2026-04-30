@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "脉点",
+  "productName": "脉络",
   "version": "0.1.0",
   "identifier": "com.inteye.loci",
   "mainBinaryName": "loci-desktop",
@@ -13,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "脉点",
+        "title": "脉络",
         "width": 1200,
         "height": 820,
         "resizable": true
@@ -29,7 +29,7 @@
     "createUpdaterArtifacts": false,
     "category": "DeveloperTool",
     "shortDescription": "本地优先的代码库理解桌面应用",
-    "longDescription": "脉点将索引、图谱浏览、追溯分析、文档生成和质量评测整合进一个本地桌面应用中。",
+    "longDescription": "脉络将索引、图谱浏览、追溯分析、文档生成和质量评测整合进一个本地桌面应用中。",
     "publisher": "inteye",
     "copyright": "Copyright (c) inteye",
     "icon": [

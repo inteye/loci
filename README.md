@@ -1,102 +1,156 @@
-# loci
+# 脉络
 
-`loci` 是一个本地优先的代码库理解系统，当前覆盖三类使用方式：
+`脉络` 是一个本地优先的代码库理解工作台，当前命令行与内部技术代号仍然使用 `loci`。
 
-- 命令行：索引代码库、追问架构、解释文件和变更、生成文档、跑评测
-- 桌面端：查看问答、Trace、Docs、Eval、Graph、Memory
-- VS Code 插件：在编辑器里直接触发问答、文件解释和变更解释
+它会把仓库索引成图谱，把代码、提交历史、追溯结论和文档生成串成一条主链路，并通过下面几种形态提供出来：
 
-它的核心不是通用 Agent 外壳，而是围绕代码库理解构建的主链路：`index -> graph -> trace -> decision/concept -> ask/doc/eval`。
+- CLI：索引、问答、追溯、文档生成、评测
+- 桌面端：Chat / Trace / Docs / Eval / Graph / Memory
+- VS Code 插件：在编辑器里直接 Ask / Explain / Diff / Index
+- 本地 HTTP API：给编辑器、脚本和外部集成使用
+
+核心工作流是：
+
+```text
+index -> graph -> trace -> decision/concept -> ask/doc/eval
+```
+
+## 项目定位
+
+很多代码助手更像“当前文件问答器”。
+
+`脉络` 想做的是另一件事：让回答尽量建立在项目结构、Git 历史、追溯证据和已经沉淀下来的设计决策之上，而不是只靠一段局部上下文。
+
+当前版本已经具备这些基础能力：
+
+- 将仓库扫描为文件 / 符号 / 提交 / 决策 / 概念图谱
+- 将 `explain` / `diff` 的结果沉淀回图谱中的 `Decision`
+- 优先用 `Decision` / `Commit` 回答“为什么这样设计”“最近怎么演进”的问题
+- 从图谱生成 onboarding / module / handoff 文档
+- 对当前项目运行轻量评测，检查理解质量
 
 ## 当前能力
 
-- 代码索引与语义检索
-- Git 历史、blame、trace 决策沉淀
-- `Decision` / `Concept` / `Commit` 图谱
-- 文档生成：`onboarding`、`module`、`handoff`
-- 评测入口：固定样本、评分、结果落盘
-- 本地 HTTP API、桌面端、VS Code 插件
+- `loci doctor`：检查项目是否已经具备完整工作流所需条件
+- `loci index`：建立本地图谱和基础提交关联
+- `loci ask`：围绕当前项目回答架构、职责、上手路径等问题
+- `loci explain`：解释文件或符号，并生成 trace 决策沉淀
+- `loci diff`：解释最近变更，并把结论写回图谱
+- `loci trace`：查看决策链、证据边和相关提交
+- `loci doc`：生成 onboarding / module / handoff 文档
+- `loci eval`：对当前索引项目运行轻量评测
+- 桌面端支持本地目录和 GitHub 仓库导入
+- 本地 HTTP API 提供 `/api/v1/*` 版本化接口
 
-## 项目结构
+## 支持的输入类型
 
-```text
-crates/
-  cli/         loci CLI
-  agent/       trace 与 agent 能力
-  codebase/    索引、git 历史、代码解析
-  graph/       知识图谱与向量索引
-  memory/      会话记忆
-  knowledge/   外部材料导入与检索
-  llm/         模型 provider 配置与客户端
-  skills/      技能系统
+当前已支持结构化代码解析的语言：
 
-apps/
-  server/            loci-server HTTP API
-  desktop/           React + Tauri 桌面端
-  vscode-extension/  VS Code 插件
-```
+- Rust
+- Python
+- TypeScript / TSX
+- JavaScript / JSX
+- Go
+- Java
 
-## 安装与配置
+当前也支持作为“文件级图谱源”纳入索引的内容：
 
-先准备 Rust 1.78+，然后在仓库根目录执行：
+- HTML
+- Markdown
+- TOML
+- YAML
+
+这意味着像原型仓库、文档仓库、产品说明仓库这类“代码不多但文件结构有价值”的项目，也可以先建立最小可用图谱。
+
+## 当前状态
+
+`脉络` 目前处于 Alpha 阶段。
+
+已经可用的主链路：
+
+- 索引项目
+- 询问架构和职责问题
+- 对文件和最近变更做追溯分析
+- 生成项目文档
+- 运行轻量评测
+
+仍在继续打磨的部分：
+
+- 更强的 trace 时间线重建和 commit 聚类
+- 更广泛的 Windows 实机验证
+- 更多语言支持
+- 更完整的端到端集成测试
+
+更细的进展和剩余事项见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+
+## 平台支持
+
+| 能力 | macOS | Linux | Windows |
+| --- | --- | --- | --- |
+| 桌面端 | 支持 | 支持 | 支持 |
+| CLI 主链路（`index / ask / trace / doc / eval`） | 支持 | 支持 | 基本可用 |
+| shell-heavy 的工具和技能场景 | 支持 | 支持 | 仍需更多验证 |
+
+说明：
+
+- 桌面端 GitHub Actions 已支持 macOS / Linux / Windows 打包。
+- CLI 现在已经补了 Windows 下的配置目录和 shell 执行分支适配。
+- Windows 仍建议先保证 `git` 在 `PATH` 中，并把当前版本视为“可用但仍需更多真实项目验证”。
+
+## 安装
+
+### CLI
+
+在仓库根目录构建：
 
 ```bash
 cargo build --workspace
 ```
 
-如果你希望像 `npm install -g` 一样全局直接使用 `loci`，Rust 下对应的方式是 `cargo install`：
+从当前仓库全局安装 CLI：
 
 ```bash
-# 从当前仓库全局安装 loci
 cargo install --path crates/cli
-
-# 或使用仓库里的快捷入口
-make install
 ```
 
-安装完成后，二进制会进入 `~/.cargo/bin/loci`。确保 `~/.cargo/bin` 在 `PATH` 里，然后就可以直接执行：
+安装后验证：
 
 ```bash
 loci --help
-loci index .
-loci ask "这个项目的核心模块是什么？" --path .
 ```
 
-如果更新了本地源码并希望覆盖安装：
+### 桌面端
+
+本地开发：
 
 ```bash
-cargo install --path crates/cli --force
+cd apps/desktop
+npm install
+npm run tauri:dev
 ```
 
-LLM provider 可以通过环境变量或配置文件提供。推荐复制 [config.example.toml](config.example.toml) 到：
+构建当前平台的桌面安装包：
+
+```bash
+cd apps/desktop
+npm install
+npm run tauri:build
+```
+
+## 配置
+
+`脉络` 会按下面的顺序寻找 provider 配置：
 
 - 项目级：`.bs/config.toml`
-- 全局：`~/.config/bs/config.toml`
+- macOS / Linux 全局：`~/.config/bs/config.toml`
+- Windows 全局：`%APPDATA%/bs/config.toml`
 
-推荐优先级：
+建议从 [config.example.toml](config.example.toml) 开始：
 
-1. `litellm-rs` 统一网关
-2. 直接连接 OpenAI-compatible 服务
-3. 直接连接 Anthropic Messages API
-
-最推荐的生产方案是让 `loci desktop` 和 CLI 都指向同一个 `litellm-rs` 网关，这样模型切换、鉴权和多 provider 管理都在网关里完成，`loci` 只维护项目级默认 provider。
-
-桌面端内置了一组常见服务商入口：
-
-- `OpenAI`
-- `Anthropic`
-- `Ollama`
-- `Qwen Coding Plan`
-- `litellm-rs Gateway`
-
-这些内置项默认已经带好协议、推荐地址和默认模型，通常只需要补 `API Key`。
-如果你有企业代理、镜像或自建网关，内置项也支持修改 URL，并可从当前地址自动读取模型列表供选择。
-如果你接的是其他兼容服务，再使用“自定义 provider”，填写：
-
-- 协议类型：`OpenAI` 或 `Anthropic`
-- 接口地址
-- 模型名
-- API Key
+```bash
+mkdir -p .bs
+cp config.example.toml .bs/config.toml
+```
 
 示例：
 
@@ -111,156 +165,86 @@ model = "gpt-4o-mini"
 api_key_env = "LITELLM_API_KEY"
 ```
 
-也可以直接使用环境变量：
+当前支持的 provider 形态：
+
+- OpenAI 兼容接口
+- Anthropic
+- LiteLLM / litellm-rs 网关
+- 本地 OpenAI 兼容网关，例如 Ollama
+
+## 5 分钟快速开始
+
+进入你想分析的仓库后：
 
 ```bash
-export OPENAI_API_KEY=sk-...
-export LITELLM_API_KEY=sk-...
-```
+# 1. 先看当前项目还缺什么
+loci doctor --path .
 
-### litellm-rs 集成
+# 2. 建立图谱
+loci index --path .
 
-如果你准备把 `litellm-rs` 作为统一模型网关，建议按这条最短路径接入。
+# 3. 测一下模型连接
+loci model test --path .
 
-1. 启动 `litellm-rs` gateway
-
-```bash
-cargo install litellm-rs --bin gateway
-mkdir -p config
-curl -L https://raw.githubusercontent.com/majiayu000/litellm-rs/main/config/gateway.yaml.example -o config/gateway.yaml
-gateway
-```
-
-默认情况下，`loci` 期望网关地址是：
-
-```text
-http://localhost:4000/v1
-```
-
-2. 配置 `loci`
-
-```toml
-default_provider = "litellm"
-
-[[providers]]
-name = "litellm"
-protocol = "litellm"
-base_url = "http://localhost:4000/v1"
-model = "gpt-4o-mini"
-api_key_env = "LITELLM_API_KEY"
-```
-
-如果你的 `litellm-rs` 没有开启鉴权，也可以临时写一个占位 key：
-
-```toml
-api_key = "litellm"
-```
-
-3. 先用 CLI 验证连接
-
-```bash
-loci model list
-loci model test --provider litellm
-```
-
-4. 再进入桌面端
-
-在桌面端里：
-
-- 选择项目目录
-- 建立索引
-- 在顶部 `模型设置` 条里确认默认 provider 是 `litellm`
-- 点击 `测试连接`
-- 通过后再开始问答、文档生成和评测
-
-如果你不想自建网关，桌面端也支持直接配置内置服务商：
-
-- `OpenAI`
-- `Anthropic`
-- `Ollama`
-- `Qwen Coding Plan`
-
-其他兼容服务走 `自定义 Provider` 即可。
-
-## 命令行快速开始
-
-`loci` 是主入口二进制。下面示例优先使用全局安装后的形式；如果你还没安装，也可以把 `loci` 替换成 `cargo run -p loci-cli --`。
-
-最重要的约束是：`index` 和后续 `ask / explain / trace / doc / eval` 必须指向同一个项目路径。最稳妥的做法有两种：
-
-1. 始终显式传 `--path`
-2. 先注册并切换 active project，再直接运行命令
-
-示例一：显式路径
-
-```bash
-loci index --path /path/to/repo
-loci ask "这个项目的核心模块是什么？" --path /path/to/repo
-loci trace crates/cli/src/main.rs --path /path/to/repo
-```
-
-示例二：使用项目注册表
-
-```bash
-loci project add myrepo --path /path/to/repo
-loci project use myrepo
-loci index
-loci ask "这个项目的核心模块是什么？"
-```
-
-```bash
-# 索引项目
-loci index .
-
-# 查看当前可用 provider
-loci model list
-
-# 测试默认 provider 连接
-loci model test
-
-# 测试指定 provider 连接
-loci model test --provider litellm
-
-# 询问代码库
+# 4. 直接提问
 loci ask "这个项目的核心模块是什么？" --path .
 
-# 解释文件 / 追溯原因
-loci explain crates/cli/src/main.rs --path .
-loci trace crates/cli/src/main.rs --path .
-
-# 解释最近变更
+# 5. 跑追溯链路
+loci explain path/to/file --path .
 loci diff --path .
+loci trace path/to/file --path .
 
-# 生成文档
+# 6. 生成文档和评测
 loci doc onboarding --path .
-loci doc module --path .
-
-# 跑评测
 loci eval --path .
-
-# 项目、记忆、知识库
-loci project list
-loci memory list --path .
-loci knowledge list --path .
 ```
 
-完整命令列表：
+重要约束只有一条：
 
-```bash
-loci --help
+- `index` 和后续 `ask / explain / trace / doc / eval` 必须指向同一个项目路径。
+
+## 桌面端使用方式
+
+桌面端是目前体验最完整的入口。
+
+你可以直接：
+
+- 选择本地项目目录
+- 导入 GitHub 仓库地址
+- 自动切换到导入后的项目目录
+- 建立索引
+- 提问
+- 查看 Trace 决策和提交证据
+- 生成文档
+- 运行评测
+
+GitHub 导入的本地仓库默认放在：
+
+```text
+~/.loci/projects
 ```
 
 ## HTTP API
 
-本地服务是独立入口，主要给 CLI 的 `serve` 模式、外部集成和 VS Code 插件使用；桌面端本身不再要求先启动它：
+启动本地服务：
 
 ```bash
-loci-server
-# 或
+cargo run -p loci-server
+```
+
+或者：
+
+```bash
 loci serve --path .
 ```
 
-默认监听 `http://localhost:3000`。当前 API 同时提供兼容根路径和版本化路径：
+默认地址：
+
+```text
+http://127.0.0.1:3000
+```
+
+核心接口包括：
 
 - `GET /health`
 - `GET /meta`
@@ -272,44 +256,48 @@ loci serve --path .
 - `POST /api/v1/doc`
 - `POST /api/v1/eval`
 - `GET /api/v1/projects`
-- `POST /api/v1/knowledge/search`
-- `POST /api/v1/history`
 
-## 桌面端
+## 仓库结构
 
-桌面端位于 [apps/desktop](/root/inteye/loci/apps/desktop)，当前已经覆盖 `Chat`、`Trace`、`Docs`、`Eval`、`Graph`、`Memory`。
+```text
+crates/
+  agent/       trace 和 agent 逻辑
+  cli/         loci CLI
+  codebase/    扫描、解析、Git 历史
+  core/        共享类型和错误定义
+  graph/       图谱存储和向量索引
+  knowledge/   外部材料导入
+  llm/         模型配置和 provider 客户端
+  memory/      短期记忆
+  skills/      内置技能
+  storage/     存储辅助层
+  tools/       工具执行层
 
-开发模式：
-
-```bash
-cd apps/desktop
-npm install
-npm run tauri dev
+apps/
+  desktop/           React + Tauri 桌面端
+  server/            本地 HTTP API
+  vscode-extension/  VS Code 插件
 ```
 
-桌面端现在直接调用内嵌的本地图谱、问答和评测逻辑，不再要求用户先手动启动 `loci serve`。
+## 开发
 
-开发与打包：
+工作区检查：
+
+```bash
+cargo fmt --all
+cargo test --workspace
+```
+
+桌面端：
 
 ```bash
 cd apps/desktop
 npm install
+npm run build
 npm run tauri:dev
-npm run tauri:build
 ```
 
-`tauri build` 会按当前平台输出安装包；在 macOS 上会生成 `.app` 和 `.dmg`。
-
-## VS Code 插件
-
-插件位于 [apps/vscode-extension](/root/inteye/loci/apps/vscode-extension)，当前命令包括：
-
-- `loci: Ask a question`
-- `loci: Explain this file`
-- `loci: Explain recent changes`
-- `loci: Index project`
-
-本地开发：
+VS Code 插件：
 
 ```bash
 cd apps/vscode-extension
@@ -317,8 +305,53 @@ npm install
 npm run compile
 ```
 
-然后在 VS Code 里运行 Extension Host。插件默认连接 `http://localhost:3000`，可通过 `loci.serverUrl` 配置覆盖。
+## 发布自动化
 
-## 当前状态
+桌面端打包工作流位于：
 
-README 现在描述的是当前 alpha 阶段的真实入口，而不是早期原型。更细的演进路线和剩余工作见 [docs/ROADMAP.md](/root/inteye/loci/docs/ROADMAP.md)。
+```text
+.github/workflows/desktop-bundles.yml
+```
+
+当前会为下面三个平台原生构建桌面端 bundle：
+
+- macOS
+- Linux
+- Windows
+
+每个平台的产物都会作为 GitHub Actions artifact 上传。
+
+## 参与贡献
+
+欢迎贡献，尤其是这些方向：
+
+- 更多语言支持
+- trace 质量提升
+- Windows 兼容性验证
+- 桌面端体验打磨
+- 更完整的集成测试
+
+提交 PR 前建议至少执行：
+
+```bash
+cargo fmt --all
+cargo test --workspace
+```
+
+如果改动了桌面端，再额外执行：
+
+```bash
+cd apps/desktop
+npm run build
+```
+
+## 仍待解决的问题
+
+当前 Alpha 版本仍有几个重要的开放点：
+
+- 更强的 trace 跨提交聚类能力
+- 更稳定的决策置信度表达
+- 更大规模仓库下的性能验证
+- 开源前最终许可证选择
+
+如果你想看更完整的待办和实现路径，请直接看 [docs/ROADMAP.md](docs/ROADMAP.md)。

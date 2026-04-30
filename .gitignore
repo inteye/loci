@@ -4,6 +4,9 @@ Cargo.lock
 
 apps/desktop/package-lock.json
 apps/desktop/node_modules/
+apps/*/dist/
+apps/*/node_modules/
+apps/package-lock.json
 
 # Environment
 .env

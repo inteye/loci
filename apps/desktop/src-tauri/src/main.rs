@@ -1,3 +1,3 @@
 fn main() {
-    bs_desktop_lib::run();
+    loci_desktop_lib::run();
 }

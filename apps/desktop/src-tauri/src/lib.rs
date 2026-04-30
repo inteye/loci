@@ -7,6 +7,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_default_project_path,
             commands::pick_project_directory,
+            commands::import_github_project,
             commands::get_model_settings,
             commands::save_model_settings,
             commands::test_model_connection,
@@ -16,6 +17,8 @@ pub fn run() {
             commands::get_doc,
             commands::get_eval,
             commands::ask,
+            commands::explain_target,
+            commands::analyze_recent_diff,
             commands::index_project,
             commands::get_memories,
         ])

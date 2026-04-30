@@ -60,6 +60,10 @@ pub struct KnowledgeGraph {
 }
 
 impl KnowledgeGraph {
+    pub fn node_by_id(&self, id: Uuid) -> Option<&Node> {
+        self.nodes.iter().find(|node| node.id == id)
+    }
+
     pub fn add_node(&mut self, node: Node) -> Uuid {
         let id = node.id;
         self.nodes.push(node);
@@ -76,6 +80,20 @@ impl KnowledgeGraph {
             .find(|n| n.name.eq_ignore_ascii_case(name))
     }
 
+    pub fn find_file_node(&self, target: &str) -> Option<&Node> {
+        self.nodes.iter().find(|node| {
+            node.kind == NodeKind::File
+                && (node.name == target || node.file_path.as_deref() == Some(target))
+        })
+    }
+
+    pub fn nodes_in_file(&self, file_path: &str) -> Vec<&Node> {
+        self.nodes
+            .iter()
+            .filter(|node| node.file_path.as_deref() == Some(file_path))
+            .collect()
+    }
+
     pub fn neighbors(&self, node_id: Uuid) -> Vec<(&Edge, &Node)> {
         self.edges
             .iter()
@@ -88,6 +106,32 @@ impl KnowledgeGraph {
                     .map(|n| (e, n))
             })
             .collect()
+    }
+
+    pub fn expand_ids_with_neighbors(
+        &self,
+        seeds: &std::collections::HashSet<Uuid>,
+        depth: usize,
+    ) -> std::collections::HashSet<Uuid> {
+        let mut expanded = seeds.clone();
+        let mut frontier = seeds.clone();
+
+        for _ in 0..depth {
+            let mut next = std::collections::HashSet::new();
+            for id in &frontier {
+                for (_, node) in self.neighbors(*id) {
+                    if expanded.insert(node.id) {
+                        next.insert(node.id);
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+
+        expanded
     }
 
     /// Compact text representation for LLM context injection
@@ -144,5 +188,82 @@ impl KnowledgeGraph {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn make_node(kind: NodeKind, name: &str, file_path: Option<&str>) -> Node {
+        Node {
+            id: Uuid::new_v4(),
+            kind,
+            name: name.to_string(),
+            file_path: file_path.map(|value| value.to_string()),
+            description: None,
+            raw_source: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn finds_file_nodes_by_name_or_path() {
+        let mut graph = KnowledgeGraph::default();
+        let file = make_node(NodeKind::File, "main.rs", Some("src/main.rs"));
+        let file_id = file.id;
+        graph.add_node(file);
+        graph.add_node(make_node(NodeKind::Function, "run", Some("src/main.rs")));
+
+        assert_eq!(
+            graph.find_file_node("main.rs").map(|node| node.id),
+            Some(file_id)
+        );
+        assert_eq!(
+            graph.find_file_node("src/main.rs").map(|node| node.id),
+            Some(file_id)
+        );
+        assert_eq!(graph.nodes_in_file("src/main.rs").len(), 2);
+    }
+
+    #[test]
+    fn expands_neighbors_by_depth() {
+        let mut graph = KnowledgeGraph::default();
+        let file = make_node(NodeKind::File, "main.rs", Some("src/main.rs"));
+        let function = make_node(NodeKind::Function, "run", Some("src/main.rs"));
+        let concept = make_node(NodeKind::Concept, "Boot flow", None);
+
+        let file_id = file.id;
+        let function_id = function.id;
+        let concept_id = concept.id;
+
+        graph.add_node(file);
+        graph.add_node(function);
+        graph.add_node(concept);
+        graph.add_edge(Edge {
+            id: Uuid::new_v4(),
+            from: file_id,
+            to: function_id,
+            kind: EdgeKind::Contains,
+            label: None,
+        });
+        graph.add_edge(Edge {
+            id: Uuid::new_v4(),
+            from: function_id,
+            to: concept_id,
+            kind: EdgeKind::ExplainedBy,
+            label: None,
+        });
+
+        let seeds = std::collections::HashSet::from([file_id]);
+        let one_hop = graph.expand_ids_with_neighbors(&seeds, 1);
+        let two_hop = graph.expand_ids_with_neighbors(&seeds, 2);
+
+        assert!(one_hop.contains(&file_id));
+        assert!(one_hop.contains(&function_id));
+        assert!(!one_hop.contains(&concept_id));
+
+        assert!(two_hop.contains(&concept_id));
     }
 }

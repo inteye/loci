@@ -16,7 +16,7 @@ interface ProjectListResponse {
 
 function serverUrl(): string {
     const cfg = vscode.workspace.getConfiguration('loci');
-    return cfg.get('serverUrl', cfg.get('legacyServerUrl', 'http://localhost:3000'));
+    return cfg.get('serverUrl', 'http://localhost:3000');
 }
 
 function workspaceRoot(): string | undefined {

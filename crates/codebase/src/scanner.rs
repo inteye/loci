@@ -29,6 +29,7 @@ pub enum Language {
     JavaScript,
     Go,
     Java,
+    Html,
     Markdown,
     Toml,
     Yaml,
@@ -44,6 +45,7 @@ impl Language {
             "js" | "jsx" => Language::JavaScript,
             "go" => Language::Go,
             "java" => Language::Java,
+            "html" | "htm" => Language::Html,
             "md" => Language::Markdown,
             "toml" => Language::Toml,
             "yaml" | "yml" => Language::Yaml,
@@ -61,6 +63,14 @@ impl Language {
                 | Language::Go
                 | Language::Java
         )
+    }
+
+    pub fn is_graph_source(&self) -> bool {
+        self.is_code()
+            || matches!(
+                self,
+                Language::Html | Language::Markdown | Language::Toml | Language::Yaml
+            )
     }
 }
 
@@ -89,11 +99,7 @@ impl ProjectScanner {
             let language = Language::from_extension(ext);
             let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
 
-            let line_count = if language.is_code()
-                || matches!(
-                    language,
-                    Language::Markdown | Language::Toml | Language::Yaml
-                ) {
+            let line_count = if language.is_graph_source() {
                 std::fs::read_to_string(&path)
                     .map(|s| s.lines().count())
                     .unwrap_or(0)
@@ -121,7 +127,7 @@ impl ProjectScanner {
         let mut lang_counts: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
         for f in &files {
-            if f.language.is_code() {
+            if f.language.is_graph_source() {
                 let key = format!("{:?}", f.language);
                 *lang_counts.entry(key).or_default() += 1;
             }
@@ -155,4 +161,16 @@ fn is_ignored(path: &Path) -> bool {
     ];
     path.components()
         .any(|c| ignored.iter().any(|i| c.as_os_str() == *i))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Language;
+
+    #[test]
+    fn html_and_markdown_are_graph_sources() {
+        assert!(Language::Html.is_graph_source());
+        assert!(Language::Markdown.is_graph_source());
+        assert!(!Language::Other("png".to_string()).is_graph_source());
+    }
 }
