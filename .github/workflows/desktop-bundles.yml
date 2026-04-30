@@ -66,9 +66,35 @@ jobs:
         working-directory: apps/desktop
         run: npm run tauri:build
 
+      - name: List bundle outputs
+        run: find target/release/bundle -maxdepth 3 -type f | sort
+
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v4
         with:
           name: loci-desktop-${{ matrix.platform.name }}
-          path: apps/desktop/src-tauri/target/release/bundle
+          path: target/release/bundle
+          if-no-files-found: error
+
+  package-source:
+    name: Package Source
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Create source archives
+        run: |
+          mkdir -p dist/source
+          git archive --format=tar.gz --output=dist/source/loci-source.tar.gz --prefix=loci/ HEAD
+          git archive --format=zip --output=dist/source/loci-source.zip --prefix=loci/ HEAD
+
+      - name: Upload source archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: loci-source
+          path: |
+            dist/source/loci-source.tar.gz
+            dist/source/loci-source.zip
           if-no-files-found: error
