@@ -81,8 +81,6 @@ index -> graph -> trace -> decision/concept -> ask/doc/eval
 - 更多语言支持
 - 更完整的端到端集成测试
 
-更细的进展和剩余事项见 [docs/ROADMAP.md](docs/ROADMAP.md)。
-
 ## 平台支持
 
 | 能力 | macOS | Linux | Windows |
