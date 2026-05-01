@@ -3,9 +3,6 @@ name: Desktop Bundles
 on:
   workflow_dispatch:
   push:
-    branches:
-      - master
-      - main
     tags:
       - "v*"
 
@@ -69,43 +66,34 @@ jobs:
         working-directory: apps/desktop
         run: ${{ matrix.platform.build-command }}
 
-      - name: List bundle outputs (Unix)
-        if: matrix.platform.name != 'windows'
-        run: find target/release/bundle -maxdepth 3 -type f | sort
+      - name: Collect release assets
+        shell: bash
+        run: |
+          mkdir -p dist/release-assets
+          find target/release/bundle -type f \
+            \( \
+              -name '*.dmg' -o \
+              -name '*.AppImage' -o \
+              -name '*.deb' -o \
+              -name '*.rpm' -o \
+              -name '*.exe' \
+            \) \
+            -print0 | while IFS= read -r -d '' file; do
+              cp "$file" dist/release-assets/
+            done
 
-      - name: List bundle outputs (Windows)
-        if: matrix.platform.name == 'windows'
-        shell: pwsh
-        run: Get-ChildItem -Path target/release/bundle -Recurse -File | Sort-Object FullName | Select-Object -ExpandProperty FullName
+          if ! find dist/release-assets -maxdepth 1 -type f | grep -q .; then
+            echo "No distributable release assets were collected."
+            exit 1
+          fi
+
+          find dist/release-assets -maxdepth 1 -type f | sort
 
       - name: Upload desktop bundles
         uses: actions/upload-artifact@v4
         with:
           name: loci-desktop-${{ matrix.platform.name }}
-          path: target/release/bundle
-          if-no-files-found: error
-
-  package-source:
-    name: Package Source
-    runs-on: ubuntu-22.04
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Create source archives
-        run: |
-          mkdir -p dist/source
-          git archive --format=tar.gz --output=dist/source/loci-source.tar.gz --prefix=loci/ HEAD
-          git archive --format=zip --output=dist/source/loci-source.zip --prefix=loci/ HEAD
-
-      - name: Upload source archives
-        uses: actions/upload-artifact@v4
-        with:
-          name: loci-source
-          path: |
-            dist/source/loci-source.tar.gz
-            dist/source/loci-source.zip
+          path: dist/release-assets
           if-no-files-found: error
 
   publish-release:
@@ -113,7 +101,6 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs:
       - build-desktop
-      - package-source
     runs-on: ubuntu-22.04
 
     steps:
@@ -122,12 +109,7 @@ jobs:
         with:
           pattern: loci-desktop-*
           path: dist/release
-
-      - name: Download source artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: loci-source
-          path: dist/release/loci-source
+          merge-multiple: true
 
       - name: Show release files
         run: find dist/release -type f | sort
@@ -146,6 +128,19 @@ jobs:
               --title "$TAG_NAME" \
               --generate-notes
           fi
+
+      - name: Remove previously uploaded release assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh release view "$TAG_NAME" --repo "$REPOSITORY" --json assets --jq '.assets[].name' \
+            | while IFS= read -r asset; do
+                if [ -n "$asset" ]; then
+                  gh release delete-asset "$TAG_NAME" "$asset" --repo "$REPOSITORY" -y
+                fi
+              done
 
       - name: Upload release assets
         env:
