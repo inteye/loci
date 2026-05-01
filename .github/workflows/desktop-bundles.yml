@@ -62,14 +62,91 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Sync desktop version from release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          export RELEASE_VERSION="${RELEASE_TAG#v}"
+          node <<'NODE'
+          const fs = require('fs')
+
+          const version = process.env.RELEASE_VERSION
+          if (!version) {
+            throw new Error('RELEASE_VERSION is missing')
+          }
+
+          function writeJson(path, updater) {
+            const data = JSON.parse(fs.readFileSync(path, 'utf8'))
+            updater(data)
+            fs.writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`)
+          }
+
+          writeJson('apps/desktop/package.json', (data) => {
+            data.version = version
+          })
+
+          writeJson('apps/desktop/package-lock.json', (data) => {
+            data.version = version
+            if (data.packages && data.packages['']) {
+              data.packages[''].version = version
+            }
+          })
+
+          writeJson('apps/desktop/src-tauri/tauri.conf.json', (data) => {
+            data.version = version
+          })
+
+          const cargoTomlPath = 'apps/desktop/src-tauri/Cargo.toml'
+          const cargoToml = fs.readFileSync(cargoTomlPath, 'utf8')
+          const nextCargoToml = cargoToml.replace(/^version = ".*"$/m, `version = "${version}"`)
+          fs.writeFileSync(cargoTomlPath, nextCargoToml)
+          NODE
+
       - name: Build desktop bundles
         working-directory: apps/desktop
         run: ${{ matrix.platform.build-command }}
 
       - name: Collect release assets
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          PLATFORM_NAME: ${{ matrix.platform.name }}
         run: |
           mkdir -p dist/release-assets
+          version="$(node -p "require('./apps/desktop/package.json').version")"
+          if [[ "${RELEASE_TAG:-}" == v* ]]; then
+            version="${RELEASE_TAG#v}"
+          fi
+
+          normalize_arch() {
+            case "$1" in
+              x86_64|amd64)
+                echo "x64"
+                ;;
+              arm64)
+                echo "aarch64"
+                ;;
+              *)
+                echo "$1"
+                ;;
+            esac
+          }
+
+          detect_arch() {
+            local base="$1"
+            for arch in aarch64 arm64 x86_64 x64 amd64 universal; do
+              if [[ "$base" == *"$arch"* ]]; then
+                normalize_arch "$arch"
+                return
+              fi
+            done
+            if [[ "$PLATFORM_NAME" == "windows" ]]; then
+              echo "x64"
+            fi
+          }
+
           find target/release/bundle -type f \
             \( \
               -name '*.dmg' -o \
@@ -79,7 +156,15 @@ jobs:
               -name '*.exe' \
             \) \
             -print0 | while IFS= read -r -d '' file; do
-              cp "$file" dist/release-assets/
+              base="$(basename "$file")"
+              ext="${base##*.}"
+              arch="$(detect_arch "$base")"
+              target="dist/release-assets/loci-v${version}-${PLATFORM_NAME}"
+              if [[ -n "$arch" ]]; then
+                target="${target}-${arch}"
+              fi
+              target="${target}.${ext}"
+              cp "$file" "$target"
             done
 
           if ! find dist/release-assets -maxdepth 1 -type f | grep -q .; then
